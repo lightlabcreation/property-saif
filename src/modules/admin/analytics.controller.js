@@ -2,34 +2,51 @@ const prisma = require('../../config/prisma');
 
 exports.getRevenueStats = async (req, res) => {
     try {
-        // Aggregate all PAID invoices
-        const allInvoices = await prisma.invoice.findMany({
-            where: { status: 'paid' },
-            include: { unit: { include: { property: true } } } // Needed for breakdown
+        // 1. Actual Revenue (Requirement 7): Sum of paidAmount across all invoices
+        const invoiceAgg = await prisma.invoice.aggregate({
+            _sum: { paidAmount: true }
+        });
+        const actualRevenue = parseFloat(invoiceAgg._sum.paidAmount) || 0;
+
+        // 2. Projected Revenue (Requirement 7): Sum of monthlyRent across all Active leases
+        const leaseAgg = await prisma.lease.aggregate({
+            where: { status: 'Active' },
+            _sum: { monthlyRent: true }
+        });
+        const projectedRevenue = parseFloat(leaseAgg._sum.monthlyRent) || 0;
+
+        // 3. Breakdown by Property (Actual Revenue Focused)
+        const invoices = await prisma.invoice.findMany({
+            where: { paidAmount: { gt: 0 } },
+            include: { unit: { include: { property: true } } }
         });
 
-        // 1. Total Revenue
-        const totalRevenue = allInvoices.reduce((sum, inv) => sum + parseFloat(inv.amount), 0);
-
-        // 2. Monthly Revenue (Mocking specific months logic for brevity, but grouping by month string)
-        const monthlyMap = {};
-        allInvoices.forEach(inv => {
-            if (!monthlyMap[inv.month]) monthlyMap[inv.month] = 0;
-            monthlyMap[inv.month] += parseFloat(inv.amount);
-        });
-        const monthlyRevenue = Object.keys(monthlyMap).map(m => ({ month: m, amount: monthlyMap[m] }));
-
-        // 3. By Property
         const propertyMap = {};
-        allInvoices.forEach(inv => {
-            const propName = inv.unit?.property?.name || 'Other';
+        invoices.forEach(inv => {
+            const propName = inv.unit?.property?.name || 'Other Building';
             if (!propertyMap[propName]) propertyMap[propName] = 0;
-            propertyMap[propName] += parseFloat(inv.amount);
+            propertyMap[propName] += parseFloat(inv.paidAmount);
         });
-        const revenueByProperty = Object.keys(propertyMap).map(p => ({ name: p, amount: propertyMap[p] }));
+        const revenueByProperty = Object.keys(propertyMap).map(p => ({
+            name: p,
+            amount: propertyMap[p]
+        }));
+
+        // 4. Monthly Breakdown (Actual Revenue Focused)
+        const monthlyMap = {};
+        invoices.forEach(inv => {
+            if (!monthlyMap[inv.month]) monthlyMap[inv.month] = 0;
+            monthlyMap[inv.month] += parseFloat(inv.paidAmount);
+        });
+        const monthlyRevenue = Object.keys(monthlyMap).map(m => ({
+            month: m,
+            amount: monthlyMap[m]
+        }));
 
         res.json({
-            totalRevenue,
+            actualRevenue,
+            projectedRevenue,
+            totalRevenue: actualRevenue, // Backward compatibility
             monthlyRevenue,
             revenueByProperty
         });

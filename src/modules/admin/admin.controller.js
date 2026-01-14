@@ -13,18 +13,23 @@ exports.getDashboardStats = async (req, res) => {
 
         // 3. Occupancy (Occupied vs Vacant)
         const occupiedUnits = await prisma.unit.count({
-            where: { status: { not: 'Vacant' } }, // 'Occupied' or active lease implies not vacant
+            where: { status: 'Occupied' },
         });
         const vacantUnits = totalUnits - occupiedUnits;
 
-        // 4. Monthly Revenue (Sum of rent from occupied units)
-        const revenueAgg = await prisma.unit.aggregate({
-            where: { status: { not: 'Vacant' } },
-            _sum: {
-                rentAmount: true,
-            },
+        // 4. Revenue Calculation (Requirement 7)
+        // Projected Revenue = Sum of rent from all active leases
+        const leaseAgg = await prisma.lease.aggregate({
+            where: { status: 'Active' },
+            _sum: { monthlyRent: true }
         });
-        const monthlyRevenue = revenueAgg._sum.rentAmount || 0;
+        const projectedRevenue = parseFloat(leaseAgg._sum.monthlyRent) || 0;
+
+        // Actual Revenue = Sum of paidAmount from all invoices
+        const invoiceAgg = await prisma.invoice.aggregate({
+            _sum: { paidAmount: true }
+        });
+        const actualRevenue = parseFloat(invoiceAgg._sum.paidAmount) || 0;
 
         // 5. Recent Activity (Latest 5 tickets)
         const recentTickets = await prisma.ticket.findMany({
@@ -32,7 +37,7 @@ exports.getDashboardStats = async (req, res) => {
             orderBy: { createdAt: 'desc' },
             include: { user: true }
         });
-        const recentActivity = recentTickets.map(t => `${t.user.name} created ticket: ${t.subject}`);
+        const recentActivity = recentTickets.map(t => `${t.user?.name || 'Someone'} created ticket: ${t.subject}`);
 
         // 6. Insurance Alerts
         const today = new Date();
@@ -54,7 +59,9 @@ exports.getDashboardStats = async (req, res) => {
                 occupied: occupiedUnits,
                 vacant: vacantUnits,
             },
-            monthlyRevenue: parseFloat(monthlyRevenue),
+            projectedRevenue,
+            actualRevenue,
+            monthlyRevenue: projectedRevenue, // Backward compatibility
             insuranceAlerts: {
                 expired: expiredInsurance,
                 expiringSoon: expiringSoon
@@ -239,7 +246,7 @@ exports.updateProperty = async (req, res) => {
             const vacantUnits = currentProperty.units
                 .filter(u => u.status === 'Vacant')
                 .slice(0, unitsToRemove);
-            
+
             if (vacantUnits.length > 0) {
                 await prisma.unit.deleteMany({
                     where: {

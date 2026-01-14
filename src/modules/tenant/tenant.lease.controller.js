@@ -26,7 +26,7 @@ exports.getLeaseDetails = async (req, res) => {
 
         if (!tenant || !tenant.leases || tenant.leases.length === 0) {
             console.log('No leases found for tenant:', userId);
-            return res.status(404).json({ message: 'No lease found for this account' });
+            return res.json(null);
         }
 
         // Filter for relevant leases in JS if needed, or just take the latest
