@@ -1,0 +1,15 @@
+model Ticket {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+  subject     String
+  description String
+  priority    String   @default("Low") // Low, Medium, High
+  status      String   @default("Open") // Open, In Progress, Resolved
+  
+  // Attachments (Simplified for now)
+  attachmentUrls String? // JSON string or comma sep values if needed simple
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
