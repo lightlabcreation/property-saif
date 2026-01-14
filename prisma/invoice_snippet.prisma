@@ -1,0 +1,17 @@
+model Invoice {
+  id          Int      @id @default(autoincrement())
+  invoiceNo   String   @unique
+  tenantId    Int
+  tenant      User     @relation(fields: [tenantId], references: [id])
+  unitId      Int
+  unit        Unit     @relation(fields: [unitId], references: [id])
+  month       String   // e.g. "Jan 2026"
+  amount      Decimal
+  rent        Decimal
+  serviceFees Decimal  @default(0.0)
+  status      String   @default("draft") // draft, sent, paid
+  paidAt      DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
