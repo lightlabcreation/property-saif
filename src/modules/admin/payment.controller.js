@@ -1,4 +1,32 @@
 const prisma = require('../../config/prisma');
+const { generateReceiptPDF } = require('../../utils/pdf.utils');
+
+// GET /api/admin/payments/:id/download
+exports.downloadReceiptPDF = async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Try finding by internal ID or invoiceNo
+        const invoice = await prisma.invoice.findFirst({
+            where: {
+                OR: [
+                    { id: isNaN(parseInt(id)) ? -1 : parseInt(id) },
+                    { invoiceNo: id }
+                ]
+            },
+            include: {
+                tenant: true,
+                unit: true
+            }
+        });
+
+        if (!invoice) return res.status(404).json({ message: 'Receipt not found' });
+
+        generateReceiptPDF(invoice, res);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error generating PDF' });
+    }
+};
 
 exports.getOutstandingDues = async (req, res) => {
     try {
@@ -70,6 +98,8 @@ exports.getReceivedPayments = async (req, res) => {
         const formattedPayments = payments.map(payment => {
             return {
                 id: payment.invoiceNo,
+                tenantId: payment.tenantId,
+                unitId: payment.unitId,
                 tenant: payment.tenant.name,
                 unit: payment.unit.name,
                 type: payment.unit.rentalMode === 'FULL_UNIT' ? 'Full Unit' : 'Bedroom',

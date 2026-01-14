@@ -1,4 +1,17 @@
 const prisma = require('../../config/prisma');
+const { generateReportPDF } = require('../../utils/pdf.utils');
+
+// GET /api/admin/reports/:id/download
+exports.downloadReportPDF = async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Basic implementation, can be expanded to fetch real data
+        generateReportPDF(id, res);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error generating PDF' });
+    }
+};
 
 // GET /api/admin/reports
 exports.getReports = async (req, res) => {

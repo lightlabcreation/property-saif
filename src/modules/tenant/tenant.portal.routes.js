@@ -20,15 +20,18 @@ router.use(authorize("TENANT"));
 router.get("/dashboard", tenantPortalController.getDashboard);
 router.get("/lease", tenantLeaseController.getLeaseDetails);
 router.get("/documents", tenantDocumentController.getDocuments);
+router.get("/documents/:id", tenantDocumentController.getDocumentById);
+router.get("/documents/:id/download", tenantDocumentController.downloadDocument);
 router.post("/documents", tenantDocumentController.uploadDocument);
 
 router.get("/tickets", tenantTicketController.getTickets);
 router.post("/tickets", tenantTicketController.createTicket);
 
 router.get("/invoices", tenantInvoiceController.getInvoices);
+router.get("/invoices/:id/download", tenantInvoiceController.downloadInvoicePDF);
 router.post("/pay", tenantPaymentController.processPayment);
 
 router.get("/insurance", tenantInsuranceController.getInsurance);
-router.post("/insurance", upload.single('file'), tenantInsuranceController.uploadInsurance);
+router.post("/insurance", tenantInsuranceController.uploadInsurance);
 
 module.exports = router;

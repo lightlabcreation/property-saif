@@ -10,7 +10,7 @@ exports.getAllTenants = async (req, res) => {
         if (propertyId) {
             whereClause.leases = {
                 some: {
-                    status: 'Active',
+                    status: { in: ['Active', 'DRAFT'] },
                     unit: { propertyId: parseInt(propertyId) }
                 }
             };

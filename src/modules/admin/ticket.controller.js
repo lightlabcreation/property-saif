@@ -4,7 +4,15 @@ const https = require('https');
 // GET /api/admin/tickets
 exports.getAllTickets = async (req, res) => {
     try {
+        const { userId } = req.query;
+
+        const where = {};
+        if (userId) {
+            where.userId = parseInt(userId);
+        }
+
         const tickets = await prisma.ticket.findMany({
+            where,
             include: {
                 user: {
                     include: {
@@ -31,10 +39,12 @@ exports.getAllTickets = async (req, res) => {
                 tenant: t.user.name || 'Unknown',
                 unit: unitInfo,
                 subject: t.subject,
+                category: t.category,
                 priority: t.priority,
                 status: t.status,
                 desc: t.description,
                 createdAt: t.createdAt.toLocaleString(),
+                date: t.createdAt.toISOString().split('T')[0], // For frontend consistency
                 // Attachments
                 attachments: t.attachmentUrls ? JSON.parse(t.attachmentUrls).map((att, idx) => ({
                     ...att,
@@ -98,6 +108,7 @@ exports.createTicket = async (req, res) => {
                 subject,
                 description,
                 priority,
+                category: req.body.category,
                 status: 'Open',
                 propertyId: propertyId ? parseInt(propertyId) : null,
                 unitId: unitId ? parseInt(unitId) : null

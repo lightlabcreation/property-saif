@@ -1,4 +1,27 @@
 const prisma = require('../../config/prisma');
+const { generateLeasePDF } = require('../../utils/pdf.utils');
+
+// GET /api/admin/leases/:id/download
+exports.downloadLeasePDF = async (req, res) => {
+    try {
+        const lease = await prisma.lease.findUnique({
+            where: { id: parseInt(req.params.id) },
+            include: {
+                tenant: true,
+                unit: {
+                    include: { property: true }
+                }
+            }
+        });
+
+        if (!lease) return res.status(404).json({ message: 'Lease not found' });
+
+        generateLeasePDF(lease, res);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error generating PDF' });
+    }
+};
 
 // GET /api/admin/leases
 exports.getLeaseHistory = async (req, res) => {
@@ -87,110 +110,106 @@ exports.getActiveLease = async (req, res) => {
 // POST /api/admin/leases
 exports.createLease = async (req, res) => {
     try {
-        const { unitId, tenantName, startDate, endDate, monthlyRent, securityDeposit } = req.body;
+        const { unitId, tenantId, startDate, endDate, monthlyRent, securityDeposit } = req.body;
 
-        if (!unitId || !tenantName) {
-            return res.status(400).json({ message: 'Unit and Tenant Name are required' });
+        if (!unitId || !tenantId) {
+            return res.status(400).json({ message: 'Unit ID and Tenant ID are required' });
         }
 
         const uId = parseInt(unitId);
+        const tId = parseInt(tenantId);
 
-        // Find tenant by name (simplification based on requirement 2: "Tenant data must come from existing lease records")
-        // But for a new lease, we might need to find the tenant ID from the active lease we found earlier,
-        // or the user might be manually typing if no active lease.
-        // The requirement says: "If an active lease exists: Automatically populate Tenant Name field. Tenant Name field must be read-only."
-        // This implies if no active lease, they can't create a "Full Unit Lease" for a new tenant easily here? 
-        // Actually, requirement 3 says: "Lease creation must store: unitId, tenantId"
-
-        // Let's first try to find an active tenant for this unit to get the ID.
-        const activeLeaseFound = await prisma.lease.findFirst({
-            where: { unitId: uId, status: 'Active' }
-        });
-
-        let tenantId;
-        if (activeLeaseFound) {
-            tenantId = activeLeaseFound.tenantId;
-        } else {
-            // Fallback: try to find user by name if no active lease
-            const user = await prisma.user.findFirst({
-                where: { name: tenantName, role: 'TENANT' }
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Check for existing DRAFT or Active lease
+            const draftLease = await tx.lease.findFirst({
+                where: { unitId: uId, tenantId: tId, status: 'DRAFT' }
             });
-            if (!user) return res.status(404).json({ message: 'Tenant not found' });
-            tenantId = user.id;
-        }
 
-        // 3. LEASE ID CONSISTENCY: Reuse DRAFT lease if exists
-        const draftLease = await prisma.lease.findFirst({
-            where: { unitId: uId, tenantId: tenantId, status: 'DRAFT' }
-        });
+            const leaseData = {
+                startDate: new Date(startDate),
+                endDate: new Date(endDate),
+                monthlyRent: parseFloat(monthlyRent) || 0,
+                securityDeposit: parseFloat(securityDeposit) || 0,
+                status: 'Active'
+            };
 
-        let lease;
-        const leaseData = {
-            startDate: new Date(startDate),
-            endDate: new Date(endDate),
-            monthlyRent: parseFloat(monthlyRent) || 0,
-            securityDeposit: parseFloat(securityDeposit) || 0,
-            status: 'Active'
-        };
+            let lease;
+            if (draftLease) {
+                lease = await tx.lease.update({
+                    where: { id: draftLease.id },
+                    data: leaseData,
+                    include: { unit: true, tenant: true }
+                });
+            } else {
+                lease = await tx.lease.create({
+                    data: {
+                        unitId: uId,
+                        tenantId: tId,
+                        ...leaseData
+                    },
+                    include: { unit: true, tenant: true }
+                });
+            }
 
-        if (draftLease) {
-            lease = await prisma.lease.update({
-                where: { id: draftLease.id },
-                data: leaseData,
-                include: { unit: true, tenant: true }
+            // 2. Update unit status to Occupied
+            await tx.unit.update({
+                where: { id: uId },
+                data: { status: 'Occupied' }
             });
-        } else {
-            lease = await prisma.lease.create({
-                data: {
-                    unitId: uId,
-                    tenantId: tenantId,
-                    ...leaseData
-                },
-                include: { unit: true, tenant: true }
-            });
-        }
 
-
-        // Update unit status to Occupied
-        await prisma.unit.update({
-            where: { id: uId },
-            data: { status: 'Occupied' }
-        });
-
-        // NEW: Auto-create Invoice for the first month if Lease is Active
-        if (lease.status === 'Active') {
-            // Check if invoice already exists for this month/lease to avoid duplicates if re-running
+            // 3. Auto-create Invoice for the first month
             const monthStr = new Date(startDate).toLocaleString('default', { month: 'long', year: 'numeric' });
-
-            const existingInvoice = await prisma.invoice.findFirst({
+            const existingInvoice = await tx.invoice.findFirst({
                 where: {
-                    tenantId: tenantId,
+                    tenantId: tId,
                     unitId: uId,
                     month: monthStr
                 }
             });
 
             if (!existingInvoice) {
-                // Fix: Use findFirst to get the last invoice number to ensure uniqueness, or use timestamp if gaps are allowed.
-                // Using timestamp component to guarantee uniqueness.
-                const invoiceNo = `INV-${Date.now()}`;
+                const count = await tx.invoice.count();
+                const invoiceNo = `INV-LEASE-${String(count + 1).padStart(5, '0')}`;
+                const rentAmt = parseFloat(monthlyRent) || 0;
 
-                await prisma.invoice.create({
+                await tx.invoice.create({
                     data: {
                         invoiceNo,
-                        tenantId: tenantId,
+                        tenantId: tId,
                         unitId: uId,
                         month: monthStr,
-                        rent: parseFloat(monthlyRent) || 0,
+                        rent: rentAmt,
                         serviceFees: 0,
-                        amount: parseFloat(monthlyRent) || 0,
-                        status: 'Unpaid' // As requested: UNPAID
+                        amount: rentAmt,
+                        paidAmount: 0,
+                        balanceDue: rentAmt,
+                        status: 'sent',
+                        dueDate: new Date(startDate) // Due on start date usually
                     }
                 });
             }
-        }
 
-        res.status(201).json(lease);
+            // 4. Record Security Deposit as a Liability Transaction (Requirement 3)
+            if (parseFloat(securityDeposit) > 0) {
+                const lastTx = await tx.transaction.findFirst({ orderBy: { id: 'desc' } });
+                const prevBalance = lastTx ? parseFloat(lastTx.balance) : 0;
+
+                await tx.transaction.create({
+                    data: {
+                        date: new Date(),
+                        description: `Security Deposit Received - Lease ${lease.id}`,
+                        type: 'Liability', // Treat as liability
+                        amount: parseFloat(securityDeposit),
+                        balance: prevBalance + parseFloat(securityDeposit),
+                        status: 'Completed'
+                    }
+                });
+            }
+
+            return lease;
+        });
+
+        res.status(201).json(result);
     } catch (error) {
         console.error('Create Lease Error:', error);
         res.status(500).json({ message: 'Error creating lease' });

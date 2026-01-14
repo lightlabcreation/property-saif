@@ -44,18 +44,23 @@ router.get('/invoices', invoiceController.getInvoices);
 router.post('/invoices', invoiceController.createInvoice);
 router.put('/invoices/:id', invoiceController.updateInvoice);
 router.delete('/invoices/:id', invoiceController.deleteInvoice);
+router.get('/invoices/:id/download', invoiceController.downloadInvoicePDF);
 
 const paymentController = require('./payment.controller');
 router.get('/payments', paymentController.getReceivedPayments);
 router.get('/outstanding-dues', paymentController.getOutstandingDues);
+router.get('/payments/:id/download', paymentController.downloadReceiptPDF);
 
 const refundController = require('./refund.controller');
 router.get('/refunds', refundController.getRefunds);
 router.post('/refunds', refundController.createRefund);
+router.put('/refunds/:id', refundController.updateRefund);
+router.delete('/refunds/:id', refundController.deleteRefund);
 
 router.get('/leases', leaseController.getLeaseHistory);
 router.delete('/leases/:id', leaseController.deleteLease);
 router.put('/leases/:id', leaseController.updateLease);
+router.get('/leases/:id/download', leaseController.downloadLeasePDF);
 
 router.get('/insurance/alerts', insuranceController.getInsuranceAlerts);
 
@@ -72,6 +77,7 @@ router.post('/communication', communicationController.sendMessage);
 router.get('/analytics/revenue', analyticsController.getRevenueStats);
 router.get('/analytics/vacancy', analyticsController.getVacancyStats);
 router.get('/reports', reportsController.getReports);
+router.get('/reports/:id/download', reportsController.downloadReportPDF);
 
 router.get('/settings', settingsController.getSettings);
 router.post('/settings', settingsController.updateSettings);

@@ -1,4 +1,5 @@
 const prisma = require('../../config/prisma');
+const { uploadToCloudinary } = require('../../config/cloudinary');
 
 // Helper to calculate status
 const getPolicyStatus = (endDate) => {
@@ -51,7 +52,7 @@ exports.uploadInsurance = async (req, res) => {
             return res.status(400).json({ message: 'Missing required fields' });
         }
 
-        // Find tenant's active unit
+        // Find tenant's active unit (optional but helpful if unit linkage is required)
         const activeLease = await prisma.lease.findFirst({
             where: {
                 tenantId: userId,
@@ -60,14 +61,15 @@ exports.uploadInsurance = async (req, res) => {
             select: { unitId: true }
         });
 
-        // Handle file upload
+        // Handle file upload using express-fileupload patterns
         let documentUrl = null;
-        if (req.file) {
-            documentUrl = `/uploads/${req.file.filename}`;
+        if (req.files && req.files.file) {
+            const file = req.files.file;
+            const result = await uploadToCloudinary(file.tempFilePath, 'tenant_insurance');
+            documentUrl = result.secure_url;
         }
 
         // According to requirements: "Replace old policy if needed"
-        // Let's check for existing first.
         const existing = await prisma.insurance.findFirst({
             where: { userId }
         });
@@ -103,15 +105,6 @@ exports.uploadInsurance = async (req, res) => {
 
     } catch (e) {
         console.error('Error in uploadInsurance:', e);
-        // If file was uploaded but DB failed, we should ideally delete it
-        if (req.file) {
-            const fs = require('fs');
-            const path = require('path');
-            const filePath = path.join(__dirname, '../../../uploads', req.file.filename);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
-        }
-        res.status(500).json({ message: 'Error uploading insurance' });
+        res.status(500).json({ message: 'Error uploading insurance data' });
     }
 };
