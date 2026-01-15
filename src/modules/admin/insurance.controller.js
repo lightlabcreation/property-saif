@@ -6,10 +6,7 @@ exports.getInsuranceAlerts = async (req, res) => {
         const today = new Date();
         const insurances = await prisma.insurance.findMany({
             include: {
-                user: true,
-                unit: {
-                    include: { property: true }
-                }
+                user: true
             }
         });
 
