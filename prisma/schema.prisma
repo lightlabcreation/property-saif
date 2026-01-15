@@ -37,6 +37,8 @@ model User {
   sentMessages     Message[] @relation("SentMessages")
   receivedMessages Message[] @relation("ReceivedMessages")
   refundAdjustments RefundAdjustment[]
+
+  @@map("user")
 }
 
 model RefreshToken {
@@ -46,6 +48,8 @@ model RefreshToken {
   user      User     @relation(fields: [userId], references: [id])
   expiresAt DateTime
   createdAt DateTime @default(now())
+
+  @@map("refreshtoken")
 }
 
 model Property {
@@ -59,6 +63,8 @@ model Property {
   updatedAt        DateTime          @updatedAt
   units            Unit[]
   maintenanceTasks MaintenanceTask[]
+
+  @@map("property")
 }
 
 enum RentalMode {
@@ -81,6 +87,8 @@ model Unit {
   invoices    Invoice[]
   refundAdjustments RefundAdjustment[]
   insurances  Insurance[]
+
+  @@map("unit")
 }
 
 model Lease {
@@ -96,6 +104,8 @@ model Lease {
   securityDeposit Decimal?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  @@map("lease")
 }
 
 model Insurance {
@@ -111,6 +121,8 @@ model Insurance {
   documentUrl  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  @@map("insurance")
 }
 
 model Document {
@@ -123,6 +135,8 @@ model Document {
   fileUrl    String?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
+
+  @@map("document")
 }
 
 model Ticket {
@@ -138,6 +152,8 @@ model Ticket {
   attachmentUrls String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  @@map("ticket")
 }
 
 model Invoice {
@@ -158,6 +174,8 @@ model Invoice {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("invoice")
 }
 
 model MaintenanceTask {
@@ -174,6 +192,8 @@ model MaintenanceTask {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("maintenancetask")
 }
 
 model Transaction {
@@ -187,6 +207,8 @@ model Transaction {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("transaction")
 }
 
 model Communication {
@@ -199,6 +221,8 @@ model Communication {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("communication")
 }
 
 model Message {
@@ -212,6 +236,8 @@ model Message {
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("message")
 }
 
 model SystemSetting {
@@ -220,6 +246,8 @@ model SystemSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("systemsetting")
 }
 
 enum TaxStatus {
@@ -236,7 +264,7 @@ model Tax {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  @@map("Taxes")
+  @@map("taxes")
 }
 
 model Account {
@@ -247,7 +275,7 @@ model Account {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  @@map("Accounts")
+  @@map("accounts")
 }
 
 model RefundAdjustment {
@@ -265,4 +293,6 @@ model RefundAdjustment {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@map("refundadjustment")
 }
