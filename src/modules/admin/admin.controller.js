@@ -95,6 +95,11 @@ exports.getProperties = async (req, res) => {
                 id: p.id,
                 name: p.name,
                 address: p.address,
+                civicNumber: p.civicNumber,
+                street: p.street,
+                city: p.city,
+                province: p.province,
+                postalCode: p.postalCode,
                 units: totalUnits,
                 occupancy: `${occupancyRate}%`,
                 status: p.status,
@@ -170,14 +175,28 @@ exports.getPropertyDetails = async (req, res) => {
 
 exports.createProperty = async (req, res) => {
     try {
-        const { name, units, status, ownerId, address } = req.body;
+        const { name, units, status, ownerId, address, civicNumber, street, city, province, postalCode } = req.body;
+
+        // Build full address from components if provided
+        let fullAddress = address || "Not Provided";
+        if (civicNumber && street) {
+            fullAddress = `${civicNumber} ${street}`;
+            if (city) fullAddress += `, ${city}`;
+            if (province) fullAddress += `, ${province}`;
+            if (postalCode) fullAddress += ` ${postalCode}`;
+        }
 
         // Create property with auto-generated units to match the count
         const property = await prisma.property.create({
             data: {
                 name,
                 status,
-                address: address || "Not Provided",
+                address: fullAddress,
+                civicNumber: civicNumber || null,
+                street: street || null,
+                city: city || null,
+                province: province || null,
+                postalCode: postalCode || null,
                 ownerId: ownerId ? parseInt(ownerId) : null,
                 units: {
                     create: Array.from({ length: parseInt(units) || 0 }).map((_, i) => ({
@@ -192,6 +211,12 @@ exports.createProperty = async (req, res) => {
         res.json({
             id: property.id,
             name: property.name,
+            address: property.address,
+            civicNumber: property.civicNumber,
+            street: property.street,
+            city: property.city,
+            province: property.province,
+            postalCode: property.postalCode,
             units: property.units.length,
             status: property.status,
             ownerName: property.owner?.name
@@ -205,7 +230,7 @@ exports.createProperty = async (req, res) => {
 exports.updateProperty = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, units, status } = req.body;
+        const { name, units, status, civicNumber, street, city, province, postalCode } = req.body;
 
         // First, get the current property to check unit count
         const currentProperty = await prisma.property.findUnique({
@@ -217,12 +242,27 @@ exports.updateProperty = async (req, res) => {
             return res.status(404).json({ message: 'Property not found' });
         }
 
-        // Update property name and status
+        // Build full address from components if provided
+        let fullAddress = currentProperty.address;
+        if (civicNumber && street) {
+            fullAddress = `${civicNumber} ${street}`;
+            if (city) fullAddress += `, ${city}`;
+            if (province) fullAddress += `, ${province}`;
+            if (postalCode) fullAddress += ` ${postalCode}`;
+        }
+
+        // Update property name, status and address fields
         await prisma.property.update({
             where: { id: parseInt(id) },
             data: {
                 name,
-                status
+                status,
+                address: fullAddress,
+                civicNumber: civicNumber || currentProperty.civicNumber,
+                street: street || currentProperty.street,
+                city: city || currentProperty.city,
+                province: province || currentProperty.province,
+                postalCode: postalCode || currentProperty.postalCode
             }
         });
 
@@ -265,6 +305,12 @@ exports.updateProperty = async (req, res) => {
         res.json({
             id: updatedProperty.id,
             name: updatedProperty.name,
+            address: updatedProperty.address,
+            civicNumber: updatedProperty.civicNumber,
+            street: updatedProperty.street,
+            city: updatedProperty.city,
+            province: updatedProperty.province,
+            postalCode: updatedProperty.postalCode,
             units: updatedProperty.units.length,
             status: updatedProperty.status
         });

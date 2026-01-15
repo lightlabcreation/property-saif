@@ -89,7 +89,7 @@ exports.getTenantById = async (req, res) => {
 // POST /api/admin/tenants
 exports.createTenant = async (req, res) => {
     try {
-        const { name, email, password, phone, type, unitId } = req.body;
+        const { name, email, password, phone, type, unitId, bedroomId } = req.body;
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password || '123456', 10);
@@ -108,28 +108,39 @@ exports.createTenant = async (req, res) => {
                 }
             });
 
-            // 2. If Unit selected, Create Lease & Update Unit
-            if (unitId) {
-                const uId = parseInt(unitId);
+            // 2. If Bedroom selected, get unitId from bedroom and create lease
+            let finalUnitId = unitId ? parseInt(unitId) : null;
 
-                // Check if unit exists and is vacant (optional but good practice)
-                // For now, force entry.
+            if (bedroomId) {
+                const bId = parseInt(bedroomId);
+                const bedroom = await prisma.bedroom.findUnique({
+                    where: { id: bId }
+                });
 
+                if (bedroom) {
+                    finalUnitId = bedroom.unitId;
+
+                    // Mark bedroom as Occupied
+                    await prisma.bedroom.update({
+                        where: { id: bId },
+                        data: { status: 'Occupied' }
+                    });
+                }
+            }
+
+            // 3. If Unit available, Create Lease
+            if (finalUnitId) {
                 // Create placeholder DRAFT lease
                 await prisma.lease.create({
                     data: {
                         tenantId: newUser.id,
-                        unitId: uId,
+                        unitId: finalUnitId,
                         status: 'DRAFT',
                         // NO dates, NO rent as per requirement
                     }
                 });
 
-                // Update Unit Status
-                // await prisma.unit.update({
-                //     where: { id: uId },
-                //     data: { status: 'Occupied' }
-                // });
+                // Note: Unit status is updated to Occupied only when lease becomes Active
             }
 
             return newUser;
@@ -149,15 +160,21 @@ exports.deleteTenant = async (req, res) => {
         const id = parseInt(req.params.id);
 
         await prisma.$transaction(async (prisma) => {
-            // 1. Find active lease to vacate unit
-            const activeLease = await prisma.lease.findFirst({
-                where: { tenantId: id, status: 'Active' }
+            // 1. Find any lease (Active or Draft) to vacate unit and bedrooms
+            const anyLease = await prisma.lease.findFirst({
+                where: { tenantId: id, status: { in: ['Active', 'DRAFT'] } }
             });
 
-            if (activeLease) {
+            if (anyLease) {
+                // Vacate all bedrooms in the unit
+                await prisma.bedroom.updateMany({
+                    where: { unitId: anyLease.unitId, status: 'Occupied' },
+                    data: { status: 'Vacant' }
+                });
+
                 // Set unit to Vacant
                 await prisma.unit.update({
-                    where: { id: activeLease.unitId },
+                    where: { id: anyLease.unitId },
                     data: { status: 'Vacant' }
                 });
             }
@@ -196,7 +213,7 @@ exports.deleteTenant = async (req, res) => {
 exports.updateTenant = async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const { name, email, phone, type, unitId } = req.body;
+        const { name, email, phone, type, unitId, bedroomId } = req.body;
 
         const updatedTenant = await prisma.$transaction(async (prisma) => {
             // 1. Update basic info
@@ -205,10 +222,21 @@ exports.updateTenant = async (req, res) => {
                 data: { name, email, phone, type }
             });
 
-            // 2. Handle Unit Change if unitId is provided
-            if (unitId) {
-                const newUnitId = parseInt(unitId);
+            // 2. Handle Bedroom/Unit Change
+            let newUnitId = unitId ? parseInt(unitId) : null;
+            let newBedroomId = bedroomId ? parseInt(bedroomId) : null;
 
+            // If bedroomId provided, get unitId from bedroom
+            if (newBedroomId) {
+                const bedroom = await prisma.bedroom.findUnique({
+                    where: { id: newBedroomId }
+                });
+                if (bedroom) {
+                    newUnitId = bedroom.unitId;
+                }
+            }
+
+            if (newUnitId) {
                 // Find any current lease (Active or Draft)
                 const currentLease = await prisma.lease.findFirst({
                     where: {
@@ -219,13 +247,26 @@ exports.updateTenant = async (req, res) => {
 
                 // If switching units (and strictly if unitId is different)
                 if (currentLease && currentLease.unitId !== newUnitId) {
-                    // A. Vacate old unit
+                    // A. Vacate old bedroom if it was bedroom-wise
+                    // Find bedrooms in old unit that might be occupied by this tenant
+                    const oldBedrooms = await prisma.bedroom.findMany({
+                        where: { unitId: currentLease.unitId, status: 'Occupied' }
+                    });
+                    // Mark all as vacant (simplified - in a more complex system, track which bedroom belongs to which tenant)
+                    for (const ob of oldBedrooms) {
+                        await prisma.bedroom.update({
+                            where: { id: ob.id },
+                            data: { status: 'Vacant' }
+                        });
+                    }
+
+                    // B. Vacate old unit
                     await prisma.unit.update({
                         where: { id: currentLease.unitId },
                         data: { status: 'Vacant' }
                     });
 
-                    // B. Handle old lease
+                    // C. Handle old lease
                     if (currentLease.status === 'Active') {
                         // Terminate old active lease
                         await prisma.lease.update({
@@ -249,11 +290,19 @@ exports.updateTenant = async (req, res) => {
                         });
                     }
 
-                    // C. Occupy new unit
-                    await prisma.unit.update({
-                        where: { id: newUnitId },
-                        data: { status: 'Occupied' }
-                    });
+                    // D. Mark new bedroom as Occupied
+                    if (newBedroomId) {
+                        await prisma.bedroom.update({
+                            where: { id: newBedroomId },
+                            data: { status: 'Occupied' }
+                        });
+                    }
+
+                    // E. Occupy new unit (only if lease is active, otherwise wait)
+                    // await prisma.unit.update({
+                    //     where: { id: newUnitId },
+                    //     data: { status: 'Occupied' }
+                    // });
                 }
                 // If no lease at all exists for this tenant, create one
                 else if (!currentLease) {
@@ -264,10 +313,14 @@ exports.updateTenant = async (req, res) => {
                             status: 'DRAFT',
                         }
                     });
-                    await prisma.unit.update({
-                        where: { id: newUnitId },
-                        data: { status: 'Occupied' }
-                    });
+
+                    // Mark new bedroom as Occupied
+                    if (newBedroomId) {
+                        await prisma.bedroom.update({
+                            where: { id: newBedroomId },
+                            data: { status: 'Occupied' }
+                        });
+                    }
                 }
             }
 

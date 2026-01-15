@@ -47,6 +47,11 @@ model Property {
   id               Int               @id @default(autoincrement())
   name             String
   address          String
+  civicNumber      String?
+  street           String?
+  city             String?
+  province         String?
+  postalCode       String?
   status           String            @default("Active")
   ownerId          Int?
   createdAt        DateTime          @default(now())
@@ -62,6 +67,9 @@ model Property {
 model Unit {
   id                Int                @id @default(autoincrement())
   name              String
+  unitNumber        String?
+  unitType          String?
+  floor             Int?
   propertyId        Int
   status            String             @default("Vacant")
   bedrooms          Int                @default(1)
@@ -73,15 +81,33 @@ model Unit {
   leases            Lease[]
   refundAdjustments RefundAdjustment[]
   property          Property           @relation(fields: [propertyId], references: [id], map: "Unit_propertyId_fkey")
+  bedroomsList      Bedroom[]
 
   @@index([propertyId], map: "Unit_propertyId_fkey")
   @@map("unit")
+}
+
+model Bedroom {
+  id            Int      @id @default(autoincrement())
+  bedroomNumber String
+  roomNumber    Int
+  unitId        Int
+  status        String   @default("Vacant")
+  rentAmount    Decimal  @default(0.00)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  unit          Unit     @relation(fields: [unitId], references: [id], map: "Bedroom_unitId_fkey")
+  leases        Lease[]
+
+  @@index([unitId], map: "Bedroom_unitId_fkey")
+  @@map("bedroom")
 }
 
 model Lease {
   id              Int       @id @default(autoincrement())
   unitId          Int
   tenantId        Int
+  bedroomId       Int?
   startDate       DateTime?
   endDate         DateTime?
   status          String    @default("Active")
@@ -91,9 +117,11 @@ model Lease {
   securityDeposit Decimal?
   tenant          User      @relation("TenantLeases", fields: [tenantId], references: [id], map: "Lease_tenantId_fkey")
   unit            Unit      @relation(fields: [unitId], references: [id], map: "Lease_unitId_fkey")
+  bedroom         Bedroom?  @relation(fields: [bedroomId], references: [id], map: "Lease_bedroomId_fkey")
 
   @@index([tenantId], map: "Lease_tenantId_fkey")
   @@index([unitId], map: "Lease_unitId_fkey")
+  @@index([bedroomId], map: "Lease_bedroomId_fkey")
   @@map("lease")
 }
 
