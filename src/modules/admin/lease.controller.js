@@ -63,9 +63,38 @@ exports.getLeaseHistory = async (req, res) => {
 // DELETE /api/admin/leases/:id
 exports.deleteLease = async (req, res) => {
     try {
-        await prisma.lease.delete({ where: { id: parseInt(req.params.id) } });
-        res.json({ message: 'Deleted' });
+        const id = parseInt(req.params.id);
+        const lease = await prisma.lease.findUnique({ where: { id } });
+
+        if (!lease) return res.status(404).json({ message: 'Lease not found' });
+
+        if (lease.status === 'Active') {
+            // Revert to DRAFT so it shows up in "New Lease" dropdown again
+            await prisma.lease.update({
+                where: { id },
+                data: {
+                    status: 'DRAFT',
+                    startDate: null,
+                    endDate: null,
+                    monthlyRent: null,
+                    securityDeposit: null
+                }
+            });
+
+            // Update unit status back to Vacant
+            await prisma.unit.update({
+                where: { id: lease.unitId },
+                data: { status: 'Vacant' }
+            });
+
+            res.json({ message: 'Lease reverted to DRAFT' });
+        } else {
+            // If it's already DRAFT or other, delete permanently
+            await prisma.lease.delete({ where: { id } });
+            res.json({ message: 'Deleted permanent' });
+        }
     } catch (e) {
+        console.error('Delete Lease Error:', e);
         res.status(500).json({ message: 'Error' });
     }
 };

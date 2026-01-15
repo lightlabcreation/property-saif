@@ -52,14 +52,6 @@ exports.uploadInsurance = async (req, res) => {
             return res.status(400).json({ message: 'Missing required fields' });
         }
 
-        // Find tenant's active unit (optional but helpful if unit linkage is required)
-        const activeLease = await prisma.lease.findFirst({
-            where: {
-                tenantId: userId,
-                status: 'Active'
-            },
-            select: { unitId: true }
-        });
 
         // Handle file upload using express-fileupload patterns
         let documentUrl = null;
@@ -80,7 +72,6 @@ exports.uploadInsurance = async (req, res) => {
             policyNumber,
             startDate: new Date(startDate),
             endDate: new Date(endDate),
-            unitId: activeLease ? activeLease.unitId : null,
             documentUrl: documentUrl || (existing ? existing.documentUrl : null)
         };
 
