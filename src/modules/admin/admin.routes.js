@@ -23,6 +23,7 @@ const reportsController = require('./reports.controller');
 const settingsController = require('./settings.controller');
 const taxController = require('./tax.controller');
 const accountController = require('./account.controller');
+const documentController = require('./document.controller');
 
 router.get('/dashboard/stats', adminController.getDashboardStats);
 router.get('/owners', adminController.getOwners);
@@ -63,6 +64,9 @@ router.put('/leases/:id', leaseController.updateLease);
 router.get('/leases/:id/download', leaseController.downloadLeasePDF);
 
 router.get('/insurance/alerts', insuranceController.getInsuranceAlerts);
+router.get('/insurance/stats', insuranceController.getInsuranceStats);
+router.post('/insurance/:id/approve', insuranceController.approveInsurance);
+router.post('/insurance/:id/reject', insuranceController.rejectInsurance);
 
 router.get('/maintenance', maintenanceController.getTasks);
 router.post('/maintenance', maintenanceController.createTask);
@@ -91,5 +95,9 @@ router.get('/accounts', accountController.getAccounts);
 router.post('/accounts', accountController.createAccount);
 router.patch('/accounts/:id', accountController.updateAccount);
 router.delete('/accounts/:id', accountController.deleteAccount);
+
+router.get('/documents', documentController.getAllDocuments);
+router.get('/documents/:id/download', documentController.downloadDocument);
+router.delete('/documents/:id', documentController.deleteDocument);
 
 module.exports = router;

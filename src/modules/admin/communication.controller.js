@@ -3,17 +3,21 @@ const prisma = require('../../config/prisma');
 // GET /api/admin/communication
 exports.getHistory = async (req, res) => {
     try {
-        const history = await prisma.communication.findMany({
-            orderBy: { createdAt: 'desc' }
+        const history = await prisma.communicationLog.findMany({
+            include: { recipientUser: true },
+            orderBy: { timestamp: 'desc' }
         });
 
         const formatted = history.map(item => ({
             id: item.id,
-            date: item.createdAt.toISOString().replace('T', ' ').substring(0, 16), // Simple format
-            tenant: item.recipient,
-            channel: item.type,
-            summary: item.subject || item.message.substring(0, 50),
-            status: item.status
+            date: item.timestamp.toISOString().replace('T', ' ').substring(0, 16),
+            recipient: item.recipientUser?.name || item.recipient,
+            channel: item.channel, // Email/SMS
+            eventType: item.eventType,
+            summary: item.content?.substring(0, 100) || 'No content',
+            status: item.status,
+            relatedEntity: item.relatedEntity,
+            entityId: item.entityId
         }));
 
         res.json(formatted);

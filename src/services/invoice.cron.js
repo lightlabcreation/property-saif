@@ -25,6 +25,9 @@ const initMonthlyInvoiceCron = () => {
                     status: 'Active',
                     startDate: { lte: today },
                     endDate: { gte: today }
+                },
+                include: {
+                    unit: true
                 }
             });
 
@@ -38,8 +41,7 @@ const initMonthlyInvoiceCron = () => {
                     // 1. Idempotency Check: Does this lease already have an invoice for this month?
                     const existing = await prisma.invoice.findFirst({
                         where: {
-                            tenantId: lease.tenantId,
-                            unitId: lease.unitId,
+                            leaseId: lease.id,
                             month: currentMonth
                         }
                     });
@@ -54,6 +56,10 @@ const initMonthlyInvoiceCron = () => {
                     const invoiceNo = `INV-AUTO-${String(count + 1).padStart(5, '0')}`;
 
                     const rentAmount = parseFloat(lease.monthlyRent) || 0;
+                    if (rentAmount <= 0) {
+                        console.log(`[Cron] Lease ${lease.id} has no rent set (or 0). Skipping invoice.`);
+                        continue;
+                    }
                     // Default service fees to 0 unless we have a logic for it
                     const serviceFees = 0;
                     const totalAmount = rentAmount + serviceFees;
@@ -66,6 +72,8 @@ const initMonthlyInvoiceCron = () => {
                             invoiceNo,
                             tenantId: lease.tenantId,
                             unitId: lease.unitId,
+                            leaseId: lease.id,
+                            leaseType: lease.unit.rentalMode, // Snapshot FULL_UNIT or BEDROOM_WISE
                             month: currentMonth,
                             rent: rentAmount,
                             serviceFees: serviceFees,

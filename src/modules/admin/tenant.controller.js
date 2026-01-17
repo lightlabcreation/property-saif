@@ -1,5 +1,6 @@
-const prisma = require('../../config/prisma');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
+const prisma = require('../../config/prisma');
 
 // GET /api/admin/tenants
 exports.getAllTenants = async (req, res) => {
@@ -30,7 +31,8 @@ exports.getAllTenants = async (req, res) => {
                     }
                 },
                 insurances: true,
-                documents: true
+                documents: true,
+                residents: true
             }
         });
 
@@ -40,19 +42,27 @@ exports.getAllTenants = async (req, res) => {
 
             return {
                 id: t.id,
-                name: t.name,
+                name: t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim(),
+                firstName: t.firstName,
+                lastName: t.lastName,
                 type: t.type || 'Individual',
+                companyName: t.companyName,
+                companyDetails: t.companyDetails,
                 email: t.email,
                 phone: t.phone,
-                propertyId: activeLease?.unit?.propertyId || null,
-                unitId: activeLease?.unitId || null,
+                propertyId: activeLease?.unit?.propertyId || t.buildingId || null,
+                unitId: activeLease?.unitId || t.unitId || null,
+                bedroomId: activeLease?.bedroomId || t.bedroomId || null,
                 property: activeLease?.unit?.property?.name || 'No Property',
                 unit: activeLease?.unit?.name || 'No Unit',
                 leaseStatus: activeLease ? activeLease.status : 'Inactive',
                 leaseStartDate: activeLease?.startDate || null,
                 leaseEndDate: activeLease?.endDate || null,
                 insurance: t.insurances,
-                documents: t.documents
+                documents: t.documents,
+                inviteToken: t.inviteToken,
+                hasPortalAccess: !!t.password,
+                residents: t.residents || []
             };
         });
 
@@ -89,32 +99,52 @@ exports.getTenantById = async (req, res) => {
 // POST /api/admin/tenants
 exports.createTenant = async (req, res) => {
     try {
-        const { name, email, password, phone, type, unitId, bedroomId } = req.body;
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password || '123456', 10);
+        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents } = req.body;
 
         // Transaction to ensure atomicity
         const result = await prisma.$transaction(async (prisma) => {
-            // 1. Create User
+            // 1. Create User (Tenant)
+            const inviteToken = crypto.randomBytes(32).toString('hex');
+            const inviteExpires = new Date();
+            inviteExpires.setDate(inviteExpires.getDate() + 7); // 7 days
+
             const newUser = await prisma.user.create({
                 data: {
-                    name,
+                    name: `${firstName} ${lastName}`.trim(),
+                    firstName,
+                    lastName,
                     email,
-                    password: hashedPassword,
                     phone,
                     type,
-                    role: 'TENANT'
+                    companyName: type === 'Company' ? companyName : null,
+                    companyDetails: type === 'Company' ? companyDetails : null,
+                    role: 'TENANT',
+                    buildingId: propertyId ? parseInt(propertyId) : null,
+                    unitId: unitId ? parseInt(unitId) : null,
+                    bedroomId: bedroomId ? parseInt(bedroomId) : null,
+                    inviteToken,
+                    inviteExpires,
                 }
             });
 
-            // 2. If Bedroom selected, get unitId from bedroom and create lease
-            let finalUnitId = unitId ? parseInt(unitId) : null;
+            // 2. Handle Residents if company or if provided
+            if (residents && Array.isArray(residents)) {
+                await prisma.resident.createMany({
+                    data: residents.map(r => ({
+                        tenantId: newUser.id,
+                        firstName: r.firstName,
+                        lastName: r.lastName
+                    }))
+                });
+            }
 
-            if (bedroomId) {
-                const bId = parseInt(bedroomId);
+            // 3. Handle Lease & Bedroom Logic
+            let finalUnitId = unitId ? parseInt(unitId) : null;
+            let finalBedroomId = bedroomId ? parseInt(bedroomId) : null;
+
+            if (finalBedroomId) {
                 const bedroom = await prisma.bedroom.findUnique({
-                    where: { id: bId }
+                    where: { id: finalBedroomId }
                 });
 
                 if (bedroom) {
@@ -122,25 +152,21 @@ exports.createTenant = async (req, res) => {
 
                     // Mark bedroom as Occupied
                     await prisma.bedroom.update({
-                        where: { id: bId },
+                        where: { id: finalBedroomId },
                         data: { status: 'Occupied' }
                     });
                 }
             }
 
-            // 3. If Unit available, Create Lease
+            // 4. Create Lease if Unit/Bedroom available
             if (finalUnitId) {
-                // Create placeholder DRAFT lease
                 await prisma.lease.create({
                     data: {
                         tenantId: newUser.id,
                         unitId: finalUnitId,
                         status: 'DRAFT',
-                        // NO dates, NO rent as per requirement
                     }
                 });
-
-                // Note: Unit status is updated to Occupied only when lease becomes Active
             }
 
             return newUser;
@@ -149,7 +175,10 @@ exports.createTenant = async (req, res) => {
         res.status(201).json(result);
     } catch (error) {
         console.error('Create Tenant Error:', error);
-        res.status(500).json({ message: 'Could not create tenant. Email might be duplicate.' });
+        const errorMessage = process.env.NODE_ENV === 'development'
+            ? `Could not create tenant: ${error.message}`
+            : 'Could not create tenant. Please check the data and try again.';
+        res.status(500).json({ message: errorMessage, error: process.env.NODE_ENV === 'development' ? error : undefined });
     }
 };
 
@@ -213,16 +242,41 @@ exports.deleteTenant = async (req, res) => {
 exports.updateTenant = async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const { name, email, phone, type, unitId, bedroomId } = req.body;
+        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents } = req.body;
 
         const updatedTenant = await prisma.$transaction(async (prisma) => {
             // 1. Update basic info
             const user = await prisma.user.update({
                 where: { id },
-                data: { name, email, phone, type }
+                data: {
+                    name: `${firstName} ${lastName}`.trim(),
+                    firstName,
+                    lastName,
+                    email,
+                    phone,
+                    type,
+                    companyName: type === 'Company' ? companyName : null,
+                    companyDetails: type === 'Company' ? companyDetails : null,
+                    buildingId: propertyId ? parseInt(propertyId) : null,
+                    unitId: unitId ? parseInt(unitId) : null,
+                    bedroomId: bedroomId ? parseInt(bedroomId) : null
+                }
             });
 
-            // 2. Handle Bedroom/Unit Change
+            // 2. Sync Residents
+            if (residents && Array.isArray(residents)) {
+                // Simple strategy: delete and recreate for residents
+                await prisma.resident.deleteMany({ where: { tenantId: id } });
+                await prisma.resident.createMany({
+                    data: residents.map(r => ({
+                        tenantId: id,
+                        firstName: r.firstName,
+                        lastName: r.lastName
+                    }))
+                });
+            }
+
+            // 3. Handle Bedroom/Unit Change
             let newUnitId = unitId ? parseInt(unitId) : null;
             let newBedroomId = bedroomId ? parseInt(bedroomId) : null;
 
@@ -357,5 +411,31 @@ exports.getTenantTickets = async (req, res) => {
     } catch (error) {
         console.error('Fetch Tenant Tickets Error:', error);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// POST /api/admin/tenants/:id/send-invite
+exports.sendInvite = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const inviteToken = crypto.randomBytes(32).toString('hex');
+        const inviteExpires = new Date();
+        inviteExpires.setDate(inviteExpires.getDate() + 7);
+
+        const user = await prisma.user.update({
+            where: { id },
+            data: { inviteToken, inviteExpires }
+        });
+
+        // In a real system, send email here. 
+        // For now, we return the token/link for the admin to use or verify.
+        res.json({
+            message: 'Invite generated successfully',
+            inviteToken: user.inviteToken,
+            inviteLink: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
+        });
+    } catch (error) {
+        console.error('Send Invite Error:', error);
+        res.status(500).json({ message: 'Error generating invite' });
     }
 };
