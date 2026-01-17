@@ -31,8 +31,7 @@ exports.getAllTenants = async (req, res) => {
                     }
                 },
                 insurances: true,
-                documents: true,
-                residents: true
+                documents: true
             }
         });
 
@@ -61,8 +60,7 @@ exports.getAllTenants = async (req, res) => {
                 insurance: t.insurances,
                 documents: t.documents,
                 inviteToken: t.inviteToken,
-                hasPortalAccess: !!t.password,
-                residents: t.residents || []
+                hasPortalAccess: !!t.password
             };
         });
 
