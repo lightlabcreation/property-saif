@@ -10,11 +10,20 @@ datasource db {
 model User {
   id                Int                @id @default(autoincrement())
   email             String             @unique(map: "User_email_key")
-  password          String
+  password          String?
   name              String?
+  firstName         String?
+  lastName          String?
   role              Role               @default(TENANT)
   phone             String?
   type              String?            @default("Individual")
+  companyName       String?
+  companyDetails    String?            @db.Text
+  buildingId        Int?
+  unitId            Int?
+  bedroomId         Int?
+  inviteToken       String?            @unique
+  inviteExpires     DateTime?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   documents         Document[]
@@ -27,8 +36,22 @@ model User {
   refreshTokens     RefreshToken[]
   refundAdjustments RefundAdjustment[]
   tickets           Ticket[]
+  residents         Resident[]         @relation("TenantResidents")
+  communicationLogs CommunicationLog[]
 
   @@map("user")
+}
+
+model Resident {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  firstName String
+  lastName  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tenant    User     @relation("TenantResidents", fields: [tenantId], references: [id])
+
+  @@map("resident")
 }
 
 model RefreshToken {
@@ -59,6 +82,7 @@ model Property {
   maintenanceTasks MaintenanceTask[]
   owner            User?             @relation("OwnerProperties", fields: [ownerId], references: [id], map: "Property_ownerId_fkey")
   units            Unit[]
+  documents        Document[]
 
   @@index([ownerId], map: "Property_ownerId_fkey")
   @@map("property")
@@ -82,6 +106,8 @@ model Unit {
   refundAdjustments RefundAdjustment[]
   property          Property           @relation(fields: [propertyId], references: [id], map: "Unit_propertyId_fkey")
   bedroomsList      Bedroom[]
+  documents         Document[]
+  insurances        Insurance[]
 
   @@index([propertyId], map: "Unit_propertyId_fkey")
   @@map("unit")
@@ -97,7 +123,6 @@ model Bedroom {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   unit          Unit     @relation(fields: [unitId], references: [id], map: "Bedroom_unitId_fkey")
-  leases        Lease[]
 
   @@index([unitId], map: "Bedroom_unitId_fkey")
   @@map("bedroom")
@@ -107,7 +132,6 @@ model Lease {
   id              Int       @id @default(autoincrement())
   unitId          Int
   tenantId        Int
-  bedroomId       Int?
   startDate       DateTime?
   endDate         DateTime?
   status          String    @default("Active")
@@ -117,43 +141,87 @@ model Lease {
   securityDeposit Decimal?
   tenant          User      @relation("TenantLeases", fields: [tenantId], references: [id], map: "Lease_tenantId_fkey")
   unit            Unit      @relation(fields: [unitId], references: [id], map: "Lease_unitId_fkey")
-  bedroom         Bedroom?  @relation(fields: [bedroomId], references: [id], map: "Lease_bedroomId_fkey")
+  invoices        Invoice[]
+  insurances      Insurance[]
+  documents       Document[]
 
   @@index([tenantId], map: "Lease_tenantId_fkey")
   @@index([unitId], map: "Lease_unitId_fkey")
-  @@index([bedroomId], map: "Lease_bedroomId_fkey")
   @@map("lease")
 }
 
 model Insurance {
-  id           Int      @id @default(autoincrement())
-  userId       Int
-  provider     String
-  policyNumber String
-  startDate    DateTime
-  endDate      DateTime
-  documentUrl  String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  user         User     @relation(fields: [userId], references: [id], map: "Insurance_userId_fkey")
+  id                Int             @id @default(autoincrement())
+  userId            Int
+  provider          String          // providerName
+  policyNumber      String
+  coverageType      String?
+  startDate         DateTime
+  endDate           DateTime
+  documentUrl       String?
+  uploadedDocumentId Int?
+  status            InsuranceStatus @default(PENDING_APPROVAL)
+  rejectionReason   String?         @db.Text
+  leaseId           Int?
+  unitId            Int?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  user              User            @relation(fields: [userId], references: [id], map: "Insurance_userId_fkey")
+  lease             Lease?          @relation(fields: [leaseId], references: [id])
+  unit              Unit?           @relation(fields: [unitId], references: [id])
+  document          Document?       @relation(fields: [uploadedDocumentId], references: [id], name: "InsuranceDocument")
 
   @@index([userId], map: "Insurance_userId_fkey")
   @@map("insurance")
 }
 
+enum InsuranceStatus {
+  PENDING_APPROVAL
+  ACTIVE
+  EXPIRING
+  EXPIRED
+  REJECTED
+}
+
 model Document {
-  id         Int       @id @default(autoincrement())
-  userId     Int
-  name       String
-  type       String
-  expiryDate DateTime?
-  fileUrl    String?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  user       User      @relation(fields: [userId], references: [id], map: "Document_userId_fkey")
+  id          Int       @id @default(autoincrement())
+  userId      Int?
+  leaseId     Int?
+  unitId      Int?
+  propertyId  Int?
+  invoiceId   Int?
+  name        String
+  type        String
+  expiryDate  DateTime?
+  fileUrl     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User?     @relation(fields: [userId], references: [id], map: "Document_userId_fkey")
+  lease       Lease?    @relation(fields: [leaseId], references: [id])
+  unit        Unit?     @relation(fields: [unitId], references: [id])
+  property    Property? @relation(fields: [propertyId], references: [id])
+  invoice     Invoice?  @relation(fields: [invoiceId], references: [id])
+  
+  insuranceDocs Insurance[] @relation("InsuranceDocument")
 
   @@index([userId], map: "Document_userId_fkey")
   @@map("document")
+}
+
+model CommunicationLog {
+  id            Int      @id @default(autoincrement())
+  channel       String   // Email, SMS
+  eventType     String
+  recipient     String
+  recipientId   Int?
+  relatedEntity String?  // "LEASE", "INVOICE", "INSURANCE"
+  entityId      Int?
+  content       String?  @db.Text
+  status        String   @default("Sent")
+  timestamp     DateTime @default(now())
+  recipientUser User?    @relation(fields: [recipientId], references: [id])
+
+  @@map("communicationlog")
 }
 
 model Ticket {
@@ -192,10 +260,14 @@ model Invoice {
   updatedAt     DateTime  @updatedAt
   dueDate       DateTime?
   paymentMethod String?
+  leaseId       Int?
+  leaseType     String?   // FULL_UNIT or BEDROOM
+  lease         Lease?    @relation(fields: [leaseId], references: [id])
   tenant        User      @relation(fields: [tenantId], references: [id], map: "Invoice_tenantId_fkey")
   unit          Unit      @relation(fields: [unitId], references: [id], map: "Invoice_unitId_fkey")
   payments      Payment[]
   transactions  Transaction[]
+  documents     Document[]
 
   @@index([tenantId], map: "Invoice_tenantId_fkey")
   @@index([unitId], map: "Invoice_unitId_fkey")

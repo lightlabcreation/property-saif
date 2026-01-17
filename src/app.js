@@ -21,9 +21,11 @@ app.use(
       // allow server-to-server or curl requests
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) {
+      // Allow all origins in development
+      if (process.env.NODE_ENV === 'development' || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
+        console.error("CORS blocked origin:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },

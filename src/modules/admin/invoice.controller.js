@@ -29,13 +29,34 @@ exports.getInvoices = async (req, res) => {
                 tenant: {
                     include: { leases: true }
                 },
-                unit: true
+                unit: true,
+                lease: true // Include lease to check rentAmount
             },
             orderBy: { createdAt: 'desc' }
         });
 
-        const formatted = invoices.map(inv => {
-            // Find active lease to get dates
+        // SAFETY NET: Auto-correct unpaid $0 invoices before returning
+        const formatted = await Promise.all(invoices.map(async (inv) => {
+            let currentAmount = parseFloat(inv.amount);
+            let currentRent = parseFloat(inv.rent);
+            let currentStatus = inv.status.toLowerCase();
+
+            if (currentStatus !== 'paid' && currentAmount === 0 && inv.lease && parseFloat(inv.lease.monthlyRent) > 0) {
+                const rentAmt = parseFloat(inv.lease.monthlyRent);
+                // Update in DB for persistence
+                await prisma.invoice.update({
+                    where: { id: inv.id },
+                    data: {
+                        rent: rentAmt,
+                        amount: rentAmt,
+                        balanceDue: rentAmt
+                    }
+                });
+                currentAmount = rentAmt;
+                currentRent = rentAmt;
+            }
+
+            // Find active lease to get dates for UI
             const activeLease = inv.tenant.leases.find(l => l.status === 'Active' || l.status === 'DRAFT');
 
             return {
@@ -46,14 +67,14 @@ exports.getInvoices = async (req, res) => {
                 tenant: inv.tenant.name,
                 unit: inv.unit.name,
                 month: inv.month,
-                rent: parseFloat(inv.rent),
+                rent: currentRent,
                 serviceFees: parseFloat(inv.serviceFees),
-                amount: parseFloat(inv.amount),
+                amount: currentAmount,
                 status: inv.status,
                 leaseStartDate: activeLease?.startDate || null,
                 leaseEndDate: activeLease?.endDate || null
             };
-        });
+        }));
 
         res.json(formatted);
     } catch (e) {
@@ -71,11 +92,29 @@ exports.createInvoice = async (req, res) => {
             return res.status(400).json({ message: 'Tenant ID and Unit ID are required' });
         }
 
+        // 1. Find Active Lease for this tenant and unit
+        const activeLease = await prisma.lease.findFirst({
+            where: {
+                tenantId: parseInt(tenantId),
+                unitId: parseInt(unitId),
+                status: 'Active'
+            },
+            include: { unit: true }
+        });
+
+        if (!activeLease) {
+            return res.status(400).json({ message: 'Invoices can only be generated for ACTIVE leases. No active lease found for this tenant and unit.' });
+        }
+
         // Generate Invoice Number
         const count = await prisma.invoice.count();
         const invoiceNo = `INV-MAN-${String(count + 1).padStart(5, '0')}`;
 
         const rentAmt = parseFloat(rent) || 0;
+        if (rentAmt <= 0 && (!activeLease.monthlyRent || parseFloat(activeLease.monthlyRent) <= 0)) {
+            return res.status(400).json({ message: 'Invoices cannot be created with $0 rent. Please set the lease rent first.' });
+        }
+
         const feesAmt = parseFloat(serviceFees) || 0;
         const totalAmount = rentAmt + feesAmt;
 
@@ -84,6 +123,8 @@ exports.createInvoice = async (req, res) => {
                 invoiceNo,
                 tenantId: parseInt(tenantId),
                 unitId: parseInt(unitId),
+                leaseId: activeLease.id,
+                leaseType: activeLease.unit.rentalMode, // Snapshot FULL_UNIT or BEDROOM_WISE
                 month,
                 rent: rentAmt,
                 serviceFees: feesAmt,

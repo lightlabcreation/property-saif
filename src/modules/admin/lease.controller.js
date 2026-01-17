@@ -64,40 +64,27 @@ exports.getLeaseHistory = async (req, res) => {
 exports.deleteLease = async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const lease = await prisma.lease.findUnique({
-            where: { id },
-            include: { bedroom: true }
-        });
+        const lease = await prisma.lease.findUnique({ where: { id } });
 
         if (!lease) return res.status(404).json({ message: 'Lease not found' });
 
         if (lease.status === 'Active') {
-            await prisma.$transaction(async (tx) => {
-                // Revert to DRAFT so it shows up in "New Lease" dropdown again
-                await tx.lease.update({
-                    where: { id },
-                    data: {
-                        status: 'DRAFT',
-                        startDate: null,
-                        endDate: null,
-                        monthlyRent: null,
-                        securityDeposit: null
-                    }
-                });
-
-                // Update bedroom status back to Vacant if applicable
-                if (lease.bedroomId) {
-                    await tx.bedroom.update({
-                        where: { id: lease.bedroomId },
-                        data: { status: 'Vacant' }
-                    });
+            // Revert to DRAFT so it shows up in "New Lease" dropdown again
+            await prisma.lease.update({
+                where: { id },
+                data: {
+                    status: 'DRAFT',
+                    startDate: null,
+                    endDate: null,
+                    monthlyRent: null,
+                    securityDeposit: null
                 }
+            });
 
-                // Update unit status back to Vacant
-                await tx.unit.update({
-                    where: { id: lease.unitId },
-                    data: { status: 'Vacant' }
-                });
+            // Update unit status back to Vacant
+            await prisma.unit.update({
+                where: { id: lease.unitId },
+                data: { status: 'Vacant' }
             });
 
             res.json({ message: 'Lease reverted to DRAFT' });
@@ -115,9 +102,121 @@ exports.deleteLease = async (req, res) => {
 // PUT /api/admin/leases/:id (Basic update)
 exports.updateLease = async (req, res) => {
     try {
-        res.json(req.body);
+        const id = parseInt(req.params.id);
+        const { monthlyRent } = req.body;
+
+        if (monthlyRent === undefined) {
+            return res.status(400).json({ message: 'monthlyRent is required' });
+        }
+
+        const rentAmt = parseFloat(monthlyRent);
+        if (isNaN(rentAmt) || rentAmt < 0) {
+            return res.status(400).json({ message: 'Invalid rent amount' });
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Update lease
+            const updatedLease = await tx.lease.update({
+                where: { id },
+                data: { monthlyRent: rentAmt },
+                include: { unit: true }
+            });
+
+            // 2. Sync with existing UNPAID invoices for this lease that have $0 amount
+            // This handles cases where invoices were generated as $0 before rent was set.
+            await tx.invoice.updateMany({
+                where: {
+                    leaseId: id,
+                    status: { not: 'paid' },
+                    amount: 0
+                },
+                data: {
+                    rent: rentAmt,
+                    amount: rentAmt,
+                    balanceDue: rentAmt
+                }
+            });
+
+            return updatedLease;
+        });
+
+        res.json(result);
     } catch (e) {
-        res.status(500).json({ message: 'Error' });
+        console.error('Update Lease Error:', e);
+        res.status(500).json({ message: 'Error updating lease rent' });
+    }
+};
+
+// POST /api/admin/leases/:id/activate
+exports.activateLease = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const lease = await prisma.lease.findUnique({
+            where: { id },
+            include: { unit: true }
+        });
+
+        if (!lease) return res.status(404).json({ message: 'Lease not found' });
+
+        const result = await prisma.$transaction(async (tx) => {
+            const startDate = new Date();
+            // 1. Update lease status and start date
+            const updatedLease = await tx.lease.update({
+                where: { id },
+                data: {
+                    status: 'Active',
+                    startDate: startDate
+                },
+                include: { unit: true }
+            });
+
+            // 2. Update unit status to Occupied
+            await tx.unit.update({
+                where: { id: lease.unitId },
+                data: { status: 'Occupied' }
+            });
+
+            // 3. Auto-create Invoice for the current month
+            const monthStr = startDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+            const existingInvoice = await tx.invoice.findFirst({
+                where: {
+                    tenantId: lease.tenantId,
+                    unitId: lease.unitId,
+                    month: monthStr
+                }
+            });
+
+            if (!existingInvoice) {
+                const count = await tx.invoice.count();
+                const invoiceNo = `INV-LEASE-${String(count + 1).padStart(5, '0')}`;
+                const rentAmt = parseFloat(lease.monthlyRent) || 0;
+
+                await tx.invoice.create({
+                    data: {
+                        invoiceNo,
+                        tenantId: lease.tenantId,
+                        unitId: lease.unitId,
+                        leaseId: lease.id,
+                        leaseType: lease.unit.rentalMode, // Snapshot FULL_UNIT or BEDROOM_WISE
+                        month: monthStr,
+                        rent: rentAmt,
+                        serviceFees: 0,
+                        amount: rentAmt,
+                        paidAmount: 0,
+                        balanceDue: rentAmt,
+                        status: 'sent',
+                        dueDate: startDate
+                    }
+                });
+            }
+
+            return updatedLease;
+        });
+
+        res.json(result);
+    } catch (error) {
+        console.error('Activate Lease Error:', error);
+        res.status(500).json({ message: 'Error activating lease' });
     }
 };
 
@@ -152,7 +251,7 @@ exports.getActiveLease = async (req, res) => {
 // POST /api/admin/leases
 exports.createLease = async (req, res) => {
     try {
-        const { unitId, tenantId, bedroomId, startDate, endDate, monthlyRent, securityDeposit } = req.body;
+        const { unitId, tenantId, startDate, endDate, monthlyRent, securityDeposit } = req.body;
 
         if (!unitId || !tenantId) {
             return res.status(400).json({ message: 'Unit ID and Tenant ID are required' });
@@ -160,16 +259,12 @@ exports.createLease = async (req, res) => {
 
         const uId = parseInt(unitId);
         const tId = parseInt(tenantId);
-        const bId = bedroomId ? parseInt(bedroomId) : null;
 
         const result = await prisma.$transaction(async (tx) => {
             // 1. Check for existing DRAFT or Active lease
-            const whereClause = { unitId: uId, tenantId: tId, status: 'DRAFT' };
-            if (bId) {
-                whereClause.bedroomId = bId;
-            }
-
-            const draftLease = await tx.lease.findFirst({ where: whereClause });
+            const draftLease = await tx.lease.findFirst({
+                where: { unitId: uId, tenantId: tId, status: 'DRAFT' }
+            });
 
             const leaseData = {
                 startDate: new Date(startDate),
@@ -184,35 +279,26 @@ exports.createLease = async (req, res) => {
                 lease = await tx.lease.update({
                     where: { id: draftLease.id },
                     data: leaseData,
-                    include: { unit: true, tenant: true, bedroom: true }
+                    include: { unit: true, tenant: true }
                 });
             } else {
                 lease = await tx.lease.create({
                     data: {
                         unitId: uId,
                         tenantId: tId,
-                        bedroomId: bId,
                         ...leaseData
                     },
-                    include: { unit: true, tenant: true, bedroom: true }
+                    include: { unit: true, tenant: true }
                 });
             }
 
-            // 2. Update bedroom status to Occupied if bedroomId is provided
-            if (bId) {
-                await tx.bedroom.update({
-                    where: { id: bId },
-                    data: { status: 'Occupied' }
-                });
-            }
-
-            // 3. Update unit status to Occupied
+            // 2. Update unit status to Occupied
             await tx.unit.update({
                 where: { id: uId },
                 data: { status: 'Occupied' }
             });
 
-            // 4. Auto-create Invoice for the first month
+            // 3. Auto-create Invoice for the first month
             const monthStr = new Date(startDate).toLocaleString('default', { month: 'long', year: 'numeric' });
             const existingInvoice = await tx.invoice.findFirst({
                 where: {
@@ -232,6 +318,8 @@ exports.createLease = async (req, res) => {
                         invoiceNo,
                         tenantId: tId,
                         unitId: uId,
+                        leaseId: lease.id,
+                        leaseType: lease.unit.rentalMode, // Snapshot FULL_UNIT or BEDROOM_WISE
                         month: monthStr,
                         rent: rentAmt,
                         serviceFees: 0,
@@ -244,7 +332,7 @@ exports.createLease = async (req, res) => {
                 });
             }
 
-            // 5. Record Security Deposit as a Liability Transaction (Requirement 3)
+            // 4. Record Security Deposit as a Liability Transaction (Requirement 3)
             if (parseFloat(securityDeposit) > 0) {
                 const lastTx = await tx.transaction.findFirst({ orderBy: { id: 'desc' } });
                 const prevBalance = lastTx ? parseFloat(lastTx.balance) : 0;
@@ -280,54 +368,7 @@ exports.getUnitsWithTenants = async (req, res) => {
             return res.status(400).json({ message: 'propertyId and rentalMode are required' });
         }
 
-        if (rentalMode === 'BEDROOM_WISE') {
-            // For bedroom-wise rentals, return vacant bedrooms instead of units
-            const bedrooms = await prisma.bedroom.findMany({
-                where: {
-                    status: 'Vacant',
-                    unit: {
-                        propertyId: parseInt(propertyId),
-                        rentalMode: 'BEDROOM_WISE'
-                    }
-                },
-                include: {
-                    unit: {
-                        include: {
-                            property: true,
-                            leases: {
-                                where: {
-                                    status: { in: ['DRAFT', 'Active'] }
-                                },
-                                include: {
-                                    tenant: true
-                                }
-                            }
-                        }
-                    }
-                },
-                orderBy: [
-                    { unitId: 'asc' },
-                    { roomNumber: 'asc' }
-                ]
-            });
-
-            // Format bedrooms with their tenant info
-            const formatted = bedrooms.map(b => {
-                const activeLease = b.unit.leases.find(l => l.status === 'DRAFT' || l.status === 'Active');
-                return {
-                    id: b.id,
-                    bedroomNumber: b.bedroomNumber,
-                    unitNumber: `${b.unit.property.civicNumber}-${b.unit.unitNumber}-${b.roomNumber}`,
-                    unitId: b.unitId,
-                    tenantId: activeLease?.tenantId,
-                    tenantName: activeLease?.tenant?.name
-                };
-            });
-
-            return res.json({ data: formatted });
-        }
-
-        // For full unit rentals, keep the existing logic
+        // Find units with assigned tenants (units that have DRAFT or Active leases)
         const units = await prisma.unit.findMany({
             where: {
                 propertyId: parseInt(propertyId),

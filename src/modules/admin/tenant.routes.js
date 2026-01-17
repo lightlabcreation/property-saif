@@ -7,6 +7,7 @@ router.get('/:id', tenantController.getTenantById);
 router.get('/:id/tickets', tenantController.getTenantTickets);
 router.post('/', tenantController.createTenant);
 router.put('/:id', tenantController.updateTenant);
+router.post('/:id/send-invite', tenantController.sendInvite);
 router.delete('/:id', tenantController.deleteTenant);
 
 module.exports = router;

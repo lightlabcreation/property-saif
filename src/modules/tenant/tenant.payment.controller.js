@@ -1,4 +1,6 @@
 // POST /api/tenant/pay
+const prisma = require('../../config/prisma');
+
 exports.processPayment = async (req, res) => {
     try {
         const userId = req.user.id;

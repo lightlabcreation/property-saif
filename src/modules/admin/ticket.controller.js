@@ -46,10 +46,8 @@ exports.getAllTickets = async (req, res) => {
                 createdAt: t.createdAt.toLocaleString(),
                 date: t.createdAt.toISOString().split('T')[0], // For frontend consistency
                 // Attachments
-                attachments: t.attachmentUrls ? JSON.parse(t.attachmentUrls).map((att, idx) => ({
-                    ...att,
-                    proxyUrl: `/api/admin/tickets/${t.id}/attachments/${idx}`
-                })) : [],
+                // Attachments
+                attachments: t.attachmentUrls ? JSON.parse(t.attachmentUrls) : [],
                 tenantDetails: {
                     name: t.user.name,
                     property: activeLease ? activeLease.unit.property.name : 'N/A',

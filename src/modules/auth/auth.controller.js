@@ -69,3 +69,53 @@ exports.validateLogin = [
     body('email').isEmail().withMessage('Please provide a valid email'),
     body('password').exists().withMessage('Password is required'),
 ];
+
+exports.getInviteDetails = async (req, res) => {
+    try {
+        const { token } = req.params;
+        const user = await prisma.user.findUnique({
+            where: { inviteToken: token }
+        });
+
+        if (!user || (user.inviteExpires && user.inviteExpires < new Date())) {
+            return res.status(404).json({ message: 'Invalid or expired invite token' });
+        }
+
+        res.json({
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName
+        });
+    } catch (e) {
+        res.status(500).json({ message: 'Server error' });
+    }
+};
+
+exports.acceptInvite = async (req, res) => {
+    try {
+        const { token, password } = req.body;
+        const user = await prisma.user.findUnique({
+            where: { inviteToken: token }
+        });
+
+        if (!user || (user.inviteExpires && user.inviteExpires < new Date())) {
+            return res.status(404).json({ message: 'Invalid or expired invite token' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                password: hashedPassword,
+                inviteToken: null,
+                inviteExpires: null
+            }
+        });
+
+        res.json({ message: 'Password set successfully. You can now login.' });
+    } catch (e) {
+        console.error('Accept Invite Error:', e);
+        res.status(500).json({ message: 'Server error' });
+    }
+};

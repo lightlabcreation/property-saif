@@ -1,13 +1,13 @@
 const prisma = require('../../config/prisma');
+const documentService = require('../../services/documentService');
 const { uploadToCloudinary } = require('../../config/cloudinary');
 
-// Helper to calculate status
-const getPolicyStatus = (endDate) => {
+// Helper to determine expiry label for UI
+const getExpiryLabel = (endDate) => {
     const end = new Date(endDate);
     const today = new Date();
     const diffTime = end - today;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
     if (diffDays < 0) return 'EXPIRED';
     if (diffDays <= 30) return 'EXPIRING_SOON';
     return 'ACTIVE';
@@ -19,6 +19,7 @@ exports.getInsurance = async (req, res) => {
         const userId = req.user.id;
         const insurance = await prisma.insurance.findFirst({
             where: { userId },
+            include: { document: true },
             orderBy: { createdAt: 'desc' }
         });
 
@@ -33,7 +34,8 @@ exports.getInsurance = async (req, res) => {
             startDate: insurance.startDate.toISOString().substring(0, 10),
             endDate: insurance.endDate.toISOString().substring(0, 10),
             documentUrl: insurance.documentUrl,
-            status: getPolicyStatus(insurance.endDate)
+            status: insurance.status,
+            expiryLabel: getExpiryLabel(insurance.endDate)
         });
 
     } catch (e) {
@@ -46,52 +48,66 @@ exports.getInsurance = async (req, res) => {
 exports.uploadInsurance = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { provider, policyNumber, startDate, endDate } = req.body;
+        const { provider, policyNumber, startDate, endDate, coverageType } = req.body;
 
         if (!provider || !policyNumber || !startDate || !endDate) {
             return res.status(400).json({ message: 'Missing required fields' });
         }
 
+        // 1. Get user data to link property/unit
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            include: {
+                leases: {
+                    where: { status: 'Active' },
+                    take: 1
+                }
+            }
+        });
 
-        // Handle file upload using express-fileupload patterns
+        const activeLease = user?.leases?.[0];
+
+        // 2. Handle file upload and create Document record
         let documentUrl = null;
+        let uploadedDocId = null;
+
         if (req.files && req.files.file) {
             const file = req.files.file;
             const result = await uploadToCloudinary(file.tempFilePath, 'tenant_insurance');
             documentUrl = result.secure_url;
+
+            // Use centralized DocumentService for linking
+            const doc = await documentService.linkDocument({
+                type: 'Insurance',
+                fileUrl: documentUrl,
+                userId: userId,
+                leaseId: activeLease?.id || null,
+                unitId: user?.unitId || null,
+                propertyId: user?.buildingId || null
+            });
+            uploadedDocId = doc.id;
         }
 
-        // According to requirements: "Replace old policy if needed"
-        const existing = await prisma.insurance.findFirst({
-            where: { userId }
+        // 3. Create or replace Insurance record (Set to PENDING_APPROVAL)
+        const insurance = await prisma.insurance.create({
+            data: {
+                userId,
+                provider,
+                policyNumber,
+                coverageType,
+                startDate: new Date(startDate),
+                endDate: new Date(endDate),
+                documentUrl,
+                uploadedDocumentId: uploadedDocId,
+                status: 'PENDING_APPROVAL',
+                leaseId: activeLease?.id || null,
+                unitId: user?.unitId || null
+            }
         });
-
-        let insurance;
-        const data = {
-            provider,
-            policyNumber,
-            startDate: new Date(startDate),
-            endDate: new Date(endDate),
-            documentUrl: documentUrl || (existing ? existing.documentUrl : null)
-        };
-
-        if (existing) {
-            insurance = await prisma.insurance.update({
-                where: { id: existing.id },
-                data
-            });
-        } else {
-            insurance = await prisma.insurance.create({
-                data: {
-                    userId,
-                    ...data
-                }
-            });
-        }
 
         res.status(201).json({
             ...insurance,
-            status: getPolicyStatus(insurance.endDate)
+            expiryLabel: getExpiryLabel(insurance.endDate)
         });
 
     } catch (e) {
