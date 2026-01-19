@@ -17,7 +17,13 @@ exports.getAllUnits = async (req, res) => {
         const [units, total] = await Promise.all([
             prisma.unit.findMany({
                 where,
-                include: { property: true },
+                include: {
+                    property: true,
+                    leases: {
+                        where: { status: { in: ['Active', 'DRAFT'] } },
+                        select: { id: true, status: true }
+                    }
+                },
                 skip,
                 take: limit,
                 orderBy: { createdAt: 'desc' }
@@ -35,7 +41,11 @@ exports.getAllUnits = async (req, res) => {
             building: u.property.civicNumber || u.property.name,
             status: u.status,
             propertyId: u.propertyId,
-            bedrooms: u.bedrooms
+            bedrooms: u.bedrooms,
+            rentalMode: u.rentalMode,
+            activeLeaseCount: u.leases ? u.leases.filter(l => l.status === 'Active').length : 0,
+            draftLeaseCount: u.leases ? u.leases.filter(l => l.status === 'DRAFT').length : 0,
+            activeLeases: u.leases ? u.leases.length : 0 // Keep for backward compatibility
         }));
 
         res.json({
@@ -100,25 +110,17 @@ exports.createUnit = async (req, res) => {
         if (numBedrooms > 0) {
             let bedroomsToCreate = [];
 
-            if (Array.isArray(bedroomIdentifiers) && bedroomIdentifiers.length > 0) {
-                // Use provided identifiers
-                bedroomsToCreate = bedroomIdentifiers.slice(0, numBedrooms).map((id, i) => ({
-                    bedroomNumber: id,
-                    roomNumber: i + 1,
-                    unitId: newUnit.id,
-                    status: 'Vacant',
-                    rentAmount: 0
-                }));
-            } else {
-                // Fallback auto-generation (safety)
-                bedroomsToCreate = Array.from({ length: numBedrooms }).map((_, i) => ({
-                    bedroomNumber: `${newUnit.unitNumber}-${i + 1}`,
-                    roomNumber: i + 1,
-                    unitId: newUnit.id,
-                    status: 'Vacant',
-                    rentAmount: 0
-                }));
-            }
+            const civic = newUnit.property.civicNumber || '';
+            const uNum = newUnit.unitNumber || newUnit.name;
+
+            // Normalize all bedrooms to {BuildingCivicNumber}-{UnitNumber}-{BedroomSequence}
+            bedroomsToCreate = Array.from({ length: numBedrooms }).map((_, i) => ({
+                bedroomNumber: `${civic}-${uNum}-${i + 1}`,
+                roomNumber: i + 1,
+                unitId: newUnit.id,
+                status: 'Vacant',
+                rentAmount: 0
+            }));
 
             await prisma.bedroom.createMany({
                 data: bedroomsToCreate
@@ -182,7 +184,8 @@ exports.getUnitDetails = async (req, res) => {
             rentalMode: unit.rentalMode, // Added rentalMode to response
             bedroomsList: unit.bedroomsList.map(b => ({
                 id: b.id,
-                bedroomNumber: b.bedroomNumber,
+                bedroomNumber: `${unit.property.civicNumber || ''}-${unit.unitNumber || unit.name}-${b.roomNumber}`,
+                originalBedroomNumber: b.bedroomNumber,
                 roomNumber: b.roomNumber,
                 status: b.status,
                 rentAmount: b.rentAmount
@@ -252,11 +255,12 @@ exports.updateUnit = async (req, res) => {
         if (Array.isArray(bedroomIdentifiers) || numBedrooms !== existingUnit.bedroomsList.length) {
             const existingBedrooms = existingUnit.bedroomsList;
 
+            const civic = updatedUnit.property.civicNumber || '';
+            const uNum = updatedUnit.unitNumber || updatedUnit.name;
+
             // 1. Update existing bedrooms or create new ones up to numBedrooms
             for (let i = 0; i < numBedrooms; i++) {
-                const newName = (bedroomIdentifiers && bedroomIdentifiers[i])
-                    ? bedroomIdentifiers[i]
-                    : `${updatedUnit.unitNumber}-${i + 1}`; // Fallback
+                const newName = `${civic}-${uNum}-${i + 1}`;
 
                 if (i < existingBedrooms.length) {
                     // Update existing
@@ -347,8 +351,9 @@ exports.getVacantBedrooms = async (req, res) => {
         // Format bedrooms for dropdown: [Property Name]-[Bedroom Number] (e.g., 82-101-1)
         const formatted = bedrooms.map(b => ({
             id: b.id,
-            bedroomNumber: b.bedroomNumber,
-            displayName: `${b.unit.property.name}-${b.bedroomNumber}`,
+            bedroomNumber: `${b.unit.property.civicNumber || ''}-${b.unit.unitNumber || b.unit.name}-${b.roomNumber}`,
+            originalBedroomNumber: b.bedroomNumber,
+            displayName: `${b.unit.property.name}-${b.unit.property.civicNumber || ''}-${b.unit.unitNumber || b.unit.name}-${b.roomNumber}`,
             unitNumber: b.unit.unitNumber,
             roomNumber: b.roomNumber,
             floor: b.unit.floor,

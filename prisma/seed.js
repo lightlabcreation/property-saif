@@ -170,7 +170,7 @@ async function main() {
         name: "Jean Dupont",
         role: "TENANT",
         phone: "+1 (819) 555-0200",
-        type: "Individual",
+        type: "INDIVIDUAL",
       },
     });
     console.log("✅ Sample tenant created");

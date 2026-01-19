@@ -73,6 +73,26 @@ class CommunicationService {
             entityId: insuranceId
         });
     }
+
+    /**
+     * Notify tenant of Insurance Expiry
+     */
+    async sendInsuranceExpiryAlert(userId, insuranceId, daysRemaining) {
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) return;
+
+        const content = `Your insurance policy (ID: ${insuranceId}) expires in ${daysRemaining} days. Please upload a new policy to remain compliant.`;
+
+        return this.logCommunication({
+            recipientId: userId,
+            recipientEmail: user.email,
+            eventType: `INSURANCE_EXPIRY_${daysRemaining}`,
+            channel: 'Email',
+            content,
+            relatedEntity: 'INSURANCE',
+            entityId: insuranceId
+        });
+    }
 }
 
 module.exports = new CommunicationService();

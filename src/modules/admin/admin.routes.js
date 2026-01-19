@@ -11,6 +11,7 @@ const ticketController = require('./ticket.controller');
 
 router.get('/dashboard/stats', adminController.getDashboardStats);
 router.get('/properties', adminController.getProperties);
+router.get('/properties/available', adminController.getAvailableProperties);
 
 const invoiceController = require('./invoice.controller');
 const maintenanceController = require('./maintenance.controller');
@@ -31,6 +32,7 @@ router.post('/owners', adminController.createOwner);
 router.put('/owners/:id', adminController.updateOwner);
 router.delete('/owners/:id', adminController.deleteOwner);
 router.get('/properties', adminController.getProperties);
+router.get('/properties/available', adminController.getAvailableProperties);
 router.post('/properties', adminController.createProperty);
 router.put('/properties/:id', adminController.updateProperty);
 router.delete('/properties/:id', adminController.deleteProperty);
@@ -46,6 +48,7 @@ router.post('/invoices', invoiceController.createInvoice);
 router.put('/invoices/:id', invoiceController.updateInvoice);
 router.delete('/invoices/:id', invoiceController.deleteInvoice);
 router.get('/invoices/:id/download', invoiceController.downloadInvoicePDF);
+router.post('/invoices/batch', invoiceController.runBatchInvoicing);
 
 const paymentController = require('./payment.controller');
 router.get('/payments', paymentController.getReceivedPayments);
@@ -63,6 +66,8 @@ router.delete('/leases/:id', leaseController.deleteLease);
 router.put('/leases/:id', leaseController.updateLease);
 router.get('/leases/:id/download', leaseController.downloadLeasePDF);
 
+router.get('/insurance/compliance', insuranceController.getComplianceDashboard);
+router.post('/insurance/check-alerts', insuranceController.checkInsuranceExpirations);
 router.get('/insurance/alerts', insuranceController.getInsuranceAlerts);
 router.get('/insurance/stats', insuranceController.getInsuranceStats);
 router.post('/insurance/:id/approve', insuranceController.approveInsurance);
@@ -97,6 +102,7 @@ router.patch('/accounts/:id', accountController.updateAccount);
 router.delete('/accounts/:id', accountController.deleteAccount);
 
 router.get('/documents', documentController.getAllDocuments);
+router.post('/documents/upload', documentController.uploadDocument);
 router.get('/documents/:id/download', documentController.downloadDocument);
 router.delete('/documents/:id', documentController.deleteDocument);
 

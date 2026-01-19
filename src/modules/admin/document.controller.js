@@ -1,6 +1,7 @@
 const prisma = require('../../config/prisma');
 const path = require('path');
 const documentService = require('../../services/documentService');
+const fs = require('fs');
 
 // GET /api/admin/documents
 exports.getAllDocuments = async (req, res) => {
@@ -76,10 +77,69 @@ exports.downloadDocument = async (req, res) => {
     }
 };
 
+// POST /api/admin/documents/upload
+exports.uploadDocument = async (req, res) => {
+    try {
+        if (!req.files || Object.keys(req.files).length === 0) {
+            return res.status(400).json({ message: 'No files were uploaded.' });
+        }
+
+        const file = req.files.file;
+        const { type, name, expiryDate, links } = req.body;
+
+        if (!type) {
+            return res.status(400).json({ message: 'Document type is required.' });
+        }
+
+        // Save file locally (Simple mock for now, ideally Cloudinary/S3)
+        const uploadPath = path.join(process.cwd(), 'uploads', `${Date.now()}-${file.name}`);
+
+        // Ensure uploads directory exists
+        const dir = path.dirname(uploadPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        await file.mv(uploadPath);
+
+        // Normalize links
+        let parsedLinks = [];
+        try {
+            parsedLinks = links ? JSON.parse(links) : [];
+        } catch (e) {
+            console.error('Failed to parse links:', e);
+        }
+
+        // Use service to create record and links
+        const doc = await documentService.linkDocument({
+            name: name || file.name,
+            type,
+            fileUrl: `/uploads/${path.basename(uploadPath)}`,
+            links: parsedLinks,
+            expiryDate
+        });
+
+        res.status(201).json(doc);
+    } catch (e) {
+        console.error('Upload Error:', e);
+        res.status(500).json({ message: 'Failed to upload document' });
+    }
+};
+
 // DELETE /api/admin/documents/:id
 exports.deleteDocument = async (req, res) => {
     try {
         const id = parseInt(req.params.id);
+        const doc = await prisma.document.findUnique({ where: { id } });
+
+        // Delete actual file if local
+        if (doc && doc.fileUrl && !doc.fileUrl.startsWith('http')) {
+            const filePath = path.join(process.cwd(), doc.fileUrl);
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+            }
+        }
+
         await documentService.deleteDocument(id);
         res.json({ message: 'Document deleted successfully' });
     } catch (e) {

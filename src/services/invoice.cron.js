@@ -15,56 +15,70 @@ const initMonthlyInvoiceCron = () => {
     cron.schedule(cronTime, async () => {
         console.log('[Cron] Running monthly invoice generation...');
         const today = new Date();
-
-        // We usually bill for the current month if it's the 1st
         const currentMonth = today.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+        // 1. Initialize RentRun Record
+        const rentRun = await prisma.rentRun.create({
+            data: {
+                month: currentMonth,
+                status: 'Pending'
+            }
+        });
+
+        let createdCount = 0;
+        let skippedCount = 0;
+        let totalAmount = 0;
 
         try {
             const activeLeases = await prisma.lease.findMany({
                 where: {
                     status: 'Active',
                     startDate: { lte: today },
-                    endDate: { gte: today }
+                    endDate: { gte: today },
+                    tenant: {
+                        type: { not: 'RESIDENT' }
+                    }
                 },
-                include: {
-                    unit: true
-                }
+                include: { unit: true, tenant: true }
             });
-
-            if (activeLeases.length === 0) {
-                console.log('[Cron] No active leases found for invoice generation.');
-                return;
-            }
 
             for (const lease of activeLeases) {
                 try {
-                    // 1. Idempotency Check: Does this lease already have an invoice for this month?
+                    // 2. Idempotency Check
                     const existing = await prisma.invoice.findFirst({
-                        where: {
-                            leaseId: lease.id,
-                            month: currentMonth
-                        }
+                        where: { leaseId: lease.id, month: currentMonth, rent: { gt: 0 } }
                     });
 
                     if (existing) {
-                        console.log(`[Cron] Invoice already exists for Lease ${lease.id} for ${currentMonth}. Skipping.`);
+                        await prisma.rentRunLog.create({
+                            data: {
+                                runId: rentRun.id,
+                                leaseId: lease.id,
+                                status: 'Skipped',
+                                message: 'Automated: Rent invoice already exists for this period.'
+                            }
+                        });
+                        skippedCount++;
                         continue;
                     }
 
-                    // 2. Generate New Invoice
+                    const rentAmt = parseFloat(lease.monthlyRent) || 0;
+                    if (rentAmt <= 0) {
+                        await prisma.rentRunLog.create({
+                            data: {
+                                runId: rentRun.id,
+                                leaseId: lease.id,
+                                status: 'Skipped',
+                                message: 'Automated: Lease monthlyRent is 0 or invalid.'
+                            }
+                        });
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // 3. Generate Invoice
                     const count = await prisma.invoice.count();
                     const invoiceNo = `INV-AUTO-${String(count + 1).padStart(5, '0')}`;
-
-                    const rentAmount = parseFloat(lease.monthlyRent) || 0;
-                    if (rentAmount <= 0) {
-                        console.log(`[Cron] Lease ${lease.id} has no rent set (or 0). Skipping invoice.`);
-                        continue;
-                    }
-                    // Default service fees to 0 unless we have a logic for it
-                    const serviceFees = 0;
-                    const totalAmount = rentAmount + serviceFees;
-
-                    // Due date: 5th of the current month
                     const dueDate = new Date(today.getFullYear(), today.getMonth(), 5);
 
                     await prisma.invoice.create({
@@ -73,25 +87,62 @@ const initMonthlyInvoiceCron = () => {
                             tenantId: lease.tenantId,
                             unitId: lease.unitId,
                             leaseId: lease.id,
-                            leaseType: lease.unit.rentalMode, // Snapshot FULL_UNIT or BEDROOM_WISE
+                            leaseType: lease.unit.rentalMode,
                             month: currentMonth,
-                            rent: rentAmount,
-                            serviceFees: serviceFees,
-                            amount: totalAmount,
+                            rent: rentAmt,
+                            serviceFees: 0,
+                            amount: rentAmt,
                             paidAmount: 0,
-                            balanceDue: totalAmount,
-                            status: 'sent', // 'sent' means active/unpaid
-                            dueDate: dueDate,
+                            balanceDue: rentAmt,
+                            status: 'sent',
+                            dueDate: dueDate
                         }
                     });
 
-                    console.log(`[Cron] Generated automated invoice ${invoiceNo} for Lease ${lease.id} (${currentMonth})`);
-                } catch (err) {
-                    console.error(`[Cron] Error generating invoice for Lease ${lease.id}:`, err);
+                    await prisma.rentRunLog.create({
+                        data: {
+                            runId: rentRun.id,
+                            leaseId: lease.id,
+                            status: 'Success',
+                            message: `Automated: Invoice ${invoiceNo} generated.`
+                        }
+                    });
+
+                    createdCount++;
+                    totalAmount += rentAmt;
+
+                } catch (innerErr) {
+                    console.error(`[Cron] Error processing Lease ID ${lease.id}:`, innerErr);
+                    await prisma.rentRunLog.create({
+                        data: {
+                            runId: rentRun.id,
+                            leaseId: lease.id,
+                            status: 'Error',
+                            message: `Automated Error: ${innerErr.message}`
+                        }
+                    });
+                    skippedCount++;
                 }
             }
+
+            // 4. Update RentRun with results
+            await prisma.rentRun.update({
+                where: { id: rentRun.id },
+                data: {
+                    status: 'Completed',
+                    createdCount,
+                    skippedCount,
+                    totalAmount
+                }
+            });
+
+            console.log(`[Cron] Batch run complete. Created: ${createdCount}, Skipped: ${skippedCount}`);
         } catch (error) {
             console.error('[Cron] Fatal error in monthly invoice cron job:', error);
+            await prisma.rentRun.update({
+                where: { id: rentRun.id },
+                data: { status: 'Failed' }
+            });
         }
     });
 };

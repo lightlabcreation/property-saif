@@ -16,9 +16,14 @@ model User {
   lastName          String?
   role              Role               @default(TENANT)
   phone             String?
-  type              String?            @default("Individual")
+  type              TenantType         @default(INDIVIDUAL)
   companyName       String?
   companyDetails    String?            @db.Text
+  street            String?
+  city              String?
+  state             String?
+  postalCode        String?
+  country           String?
   buildingId        Int?
   unitId            Int?
   bedroomId         Int?
@@ -26,6 +31,7 @@ model User {
   inviteExpires     DateTime?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+  companyContacts   CompanyContact[]
   documents         Document[]
   insurances        Insurance[]
   invoices          Invoice[]
@@ -45,13 +51,31 @@ model User {
 model Resident {
   id        Int      @id @default(autoincrement())
   tenantId  Int
+  leaseId   Int?
   firstName String
   lastName  String
+  email     String?
+  phone     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tenant    User     @relation("TenantResidents", fields: [tenantId], references: [id])
+  lease     Lease?   @relation(fields: [leaseId], references: [id])
 
   @@map("resident")
+}
+
+model CompanyContact {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  name      String
+  email     String
+  phone     String?
+  role      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company   User     @relation(fields: [companyId], references: [id])
+
+  @@map("companycontact")
 }
 
 model RefreshToken {
@@ -144,6 +168,7 @@ model Lease {
   invoices        Invoice[]
   insurances      Insurance[]
   documents       Document[]
+  residents       Resident[]
 
   @@index([tenantId], map: "Lease_tenantId_fkey")
   @@index([unitId], map: "Lease_unitId_fkey")
@@ -202,10 +227,21 @@ model Document {
   property    Property? @relation(fields: [propertyId], references: [id])
   invoice     Invoice?  @relation(fields: [invoiceId], references: [id])
   
+  links       DocumentLink[]
   insuranceDocs Insurance[] @relation("InsuranceDocument")
 
   @@index([userId], map: "Document_userId_fkey")
   @@map("document")
+}
+
+model DocumentLink {
+  id         Int      @id @default(autoincrement())
+  documentId Int
+  entityType String   // "LEASE", "USER", "UNIT", "PROPERTY", "INVOICE", "OWNER", "BEDROOM"
+  entityId   Int
+  document   Document @relation(fields: [documentId], references: [id])
+
+  @@map("documentlink")
 }
 
 model CommunicationLog {
@@ -408,6 +444,12 @@ model RefundAdjustment {
   @@map("refundadjustment")
 }
 
+enum TenantType {
+  INDIVIDUAL
+  COMPANY
+  RESIDENT
+}
+
 enum Role {
   ADMIN
   OWNER
@@ -422,4 +464,29 @@ enum RentalMode {
 enum TaxStatus {
   active
   inactive
+}
+
+model RentRun {
+  id           Int          @id @default(autoincrement())
+  date         DateTime     @default(now())
+  month        String
+  status       String       @default("Pending") // Pending, Completed, Failed
+  createdCount Int          @default(0)
+  skippedCount Int          @default(0)
+  totalAmount  Decimal      @default(0)
+  logs         RentRunLog[]
+
+  @@map("rentrun")
+}
+
+model RentRunLog {
+  id        Int      @id @default(autoincrement())
+  runId     Int
+  leaseId   Int
+  status    String   // Success, Skipped, Error
+  message   String?  @db.Text
+  createdAt DateTime @default(now())
+  run       RentRun  @relation(fields: [runId], references: [id])
+
+  @@map("rentrunlog")
 }

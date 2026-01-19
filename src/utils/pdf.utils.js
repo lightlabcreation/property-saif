@@ -4,8 +4,9 @@ const PDFDocument = require('pdfkit');
  * Generates an Invoice PDF
  * @param {Object} invoice - Invoice object from DB
  * @param {Object} res - Express response object
+ * @param {Object} settings - System settings for branding
  */
-const generateInvoicePDF = (invoice, res) => {
+const generateInvoicePDF = (invoice, res, settings = {}) => {
     const doc = new PDFDocument({ margin: 50 });
 
     // Set Response Headers
@@ -14,14 +15,22 @@ const generateInvoicePDF = (invoice, res) => {
 
     doc.pipe(res);
 
-    // Header
-    doc.fontSize(25).text('RENT INVOICE', { align: 'center' });
-    doc.moveDown();
+    // Header with Logo
+    const logoUrl = settings.company_logo || 'c:\\Users\\Admin\\Desktop\\backup_code_property\\frontend\\public\\assets\\logo.png';
+    try {
+        // Simple check if it's a local path or URL (simplified for this env)
+        doc.image(logoUrl, 50, 45, { width: 40 });
+    } catch (e) {
+        console.warn('Logo not found or invalid, skipping image');
+    }
 
-    // Company Info
-    doc.fontSize(10).text('PropManage SaaS', { align: 'right' });
-    doc.text('123 Business Avenue, Suite 500', { align: 'right' });
-    doc.text('Toronto, ON M5V 2N8', { align: 'right' });
+    const companyName = settings.company_name || 'PropManage SaaS';
+    const companyAddress = settings.company_address || '123 Business Avenue, Suite 500\nToronto, ON M5V 2N8';
+
+    doc.fontSize(20).font('Helvetica-Bold').text(companyName, 100, 50);
+    doc.fontSize(10).font('Helvetica').text(companyAddress, 100, 80);
+
+    doc.fontSize(20).text('RENT INVOICE', 50, 140, { align: 'right' });
     doc.moveDown();
 
     // Invoice Info

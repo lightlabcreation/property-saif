@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const prisma = require('../config/prisma');
+const { checkInsuranceExpirations } = require('../modules/admin/insurance.controller');
 
 /**
  * Lease Expiry Cron Job
@@ -83,4 +84,22 @@ const initLeaseCron = () => {
     });
 };
 
-module.exports = { initLeaseCron };
+/**
+ * Insurance Expiration Cron Job
+ * Runs once per day at 1:00 AM
+ */
+const initInsuranceCron = () => {
+    const insuranceCronTime = process.env.INSURANCE_CRON_TIME || '0 1 * * *';
+
+    console.log(`[Cron] Initializing Insurance Expiration cron with schedule: ${insuranceCronTime}`);
+
+    cron.schedule(insuranceCronTime, async () => {
+        try {
+            await checkInsuranceExpirations();
+        } catch (error) {
+            console.error('[Cron] Error in insurance expiration cron job:', error);
+        }
+    });
+};
+
+module.exports = { initLeaseCron, initInsuranceCron };

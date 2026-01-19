@@ -1,6 +1,135 @@
 const prisma = require('../../config/prisma');
 const communicationService = require('../../services/communicationService');
 
+// GET /api/admin/insurance/compliance
+exports.getComplianceDashboard = async (req, res) => {
+    try {
+        const { propertyId, ownerId, status: leaseStatus } = req.query;
+
+        const leaseWhere = {
+            status: leaseStatus || 'Active'
+        };
+
+        if (propertyId) {
+            leaseWhere.unit = { propertyId: parseInt(propertyId) };
+        }
+
+        if (ownerId) {
+            leaseWhere.unit = {
+                property: { ownerId: parseInt(ownerId) }
+            };
+        }
+
+        const leases = await prisma.lease.findMany({
+            where: leaseWhere,
+            include: {
+                tenant: true,
+                unit: {
+                    include: { property: true }
+                },
+                insurances: {
+                    where: { status: 'ACTIVE' },
+                    orderBy: { endDate: 'desc' },
+                    take: 1
+                }
+            }
+        });
+
+        const today = new Date();
+        const d30 = new Date(); d30.setDate(today.getDate() + 30);
+        const d14 = new Date(); d14.setDate(today.getDate() + 14);
+        const d7 = new Date(); d7.setDate(today.getDate() + 7);
+
+        const formatted = leases.map(lease => {
+            const insurance = lease.insurances[0];
+            let complianceStatus = 'Missing';
+            let daysRemaining = null;
+
+            if (insurance) {
+                const end = new Date(insurance.endDate);
+                daysRemaining = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+
+                if (daysRemaining < 0) {
+                    complianceStatus = 'Expired';
+                } else if (daysRemaining <= 30) {
+                    complianceStatus = 'Expiring';
+                } else {
+                    complianceStatus = 'Compliant';
+                }
+            }
+
+            return {
+                leaseId: lease.id,
+                tenantName: lease.tenant.name,
+                tenantType: lease.tenant.type,
+                building: lease.unit.property.name,
+                unitNumber: lease.unit.unitNumber || lease.unit.name,
+                status: complianceStatus,
+                daysRemaining,
+                provider: insurance?.provider || 'N/A',
+                policyNumber: insurance?.policyNumber || 'N/A',
+                expiryDate: insurance?.endDate ? insurance.endDate.toISOString().split('T')[0] : 'N/A'
+            };
+        });
+
+        res.json(formatted);
+    } catch (e) {
+        console.error('Compliance Dashboard Error:', e);
+        res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// Internal function to check and send alerts
+exports.checkInsuranceExpirations = async () => {
+    console.log('[Insurance Alerts] Checking for expiring policies...');
+    const today = new Date();
+    const alertThresholds = [30, 14, 7];
+
+    try {
+        const activeInsurances = await prisma.insurance.findMany({
+            where: { status: 'ACTIVE', endDate: { gt: today } },
+            include: { user: true, lease: true }
+        });
+
+        for (const ins of activeInsurances) {
+            const end = new Date(ins.endDate);
+            const diffDays = Math.ceil((end - today) / (1000 * 60 * 60 * 24));
+
+            if (alertThresholds.includes(diffDays)) {
+                // Check if alert already sent for this threshold
+                const eventType = `INSURANCE_EXPIRY_${diffDays}`;
+                const alreadySent = await prisma.communicationLog.findFirst({
+                    where: {
+                        recipientId: ins.userId,
+                        relatedEntity: 'INSURANCE',
+                        entityId: ins.id,
+                        eventType
+                    }
+                });
+
+                if (!alreadySent) {
+                    console.log(`Sending ${diffDays}-day alert to ${ins.user.name}`);
+                    await communicationService.sendInsuranceExpiryAlert(ins.userId, ins.id, diffDays);
+                    // Log the alert
+                    await prisma.communicationLog.create({
+                        data: {
+                            channel: 'Email',
+                            eventType,
+                            recipient: ins.user.email,
+                            recipientId: ins.userId,
+                            relatedEntity: 'INSURANCE',
+                            entityId: ins.id,
+                            content: `Insurance policy ${ins.policyNumber} expires in ${diffDays} days.`
+                        }
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Check Expirations Error:', e);
+    }
+};
+
 // GET /api/admin/insurance/alerts
 exports.getInsuranceAlerts = async (req, res) => {
     try {
