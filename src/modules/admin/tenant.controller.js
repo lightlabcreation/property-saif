@@ -159,7 +159,7 @@ exports.createTenant = async (req, res) => {
             // Send SMS if password and phone are present
             let smsResult = { success: false, note: "Skipped (No password/phone)" };
             if (password && phone) {
-                const message = `Your credentials for the Property Management App:\nEmail: ${email}\nPassword: ${password}\nLogin here: ${process.env.FRONTEND_URL || `https://property-new.netlify.app` || 'http://localhost:5173'}/login`;
+                const message = `Your credentials for the Property Management App:\nEmail: ${email}\nPassword: ${password}\nLogin here: ${process.env.FRONTEND_URL || `https://property-n.kiaantechnology.com` || 'http://localhost:5173'}/login`;
                 console.log('Sending SMS...');
 
                 // AWAIT the result so we can send it back to frontend
@@ -472,7 +472,7 @@ exports.sendInvite = async (req, res) => {
         res.json({
             message: 'Invite generated successfully',
             inviteToken: user.inviteToken,
-            inviteLink: `${process.env.FRONTEND_URL || `https://property-new.netlify.app` || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
+            inviteLink: `${process.env.FRONTEND_URL || `https://property-n.kiaantechnology.com` || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
         });
     } catch (error) {
         console.error('Send Invite Error:', error);

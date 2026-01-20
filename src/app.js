@@ -14,7 +14,8 @@ const allowedOrigins = [
   "https://masteko-asa.netlify.app",
   "http://localhost:5173",
   "https://masteko-property-kti.netlify.app",
-  "https://property-new.netlify.app"
+  "https://property-new.netlify.app",
+  "https://property-n.kiaantechnology.com"
 ];
 
 app.use(
