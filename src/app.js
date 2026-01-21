@@ -8,7 +8,9 @@ const routes = require('./routes');
 const app = express();
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
 
 const allowedOrigins = [
   "https://masteko-asa.netlify.app",
