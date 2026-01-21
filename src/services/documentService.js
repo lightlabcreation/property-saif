@@ -52,6 +52,11 @@ class DocumentService {
      * Delete a document and its relations
      */
     async deleteDocument(id) {
+        // First delete associated links to prevent foreign key constraint errors
+        await prisma.documentLink.deleteMany({
+            where: { documentId: parseInt(id) }
+        });
+
         return prisma.document.delete({
             where: { id: parseInt(id) }
         });
