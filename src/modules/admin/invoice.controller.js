@@ -111,9 +111,8 @@ exports.createInvoice = async (req, res) => {
             return res.status(400).json({ message: 'Invoices can only be generated for ACTIVE leases.' });
         }
 
-        if (activeLease.tenant.type === 'RESIDENT') {
-            return res.status(400).json({ message: 'Invoices cannot be generated for RESIDENT tenants.' });
-        }
+        // Note: RESIDENT is not a tenant type - only INDIVIDUAL and COMPANY are valid tenant types
+        // Residents are separate entities linked to tenant leases, not direct lease holders
 
         // ENFORCE PHASE 1 & 3: Separation and Lease Source of Truth
         const rentAmt = parseFloat(rent) || 0;
@@ -253,8 +252,10 @@ exports.runBatchInvoicing = async (req, res) => {
                 status: 'Active',
                 startDate: { lte: today },
                 endDate: { gte: today },
+                // Only include leases for actual tenants (INDIVIDUAL or COMPANY)
+                // Residents are separate entities and cannot have direct leases
                 tenant: {
-                    type: { not: 'RESIDENT' }
+                    type: { in: ['INDIVIDUAL', 'COMPANY'] }
                 }
             },
             include: { unit: true, tenant: true }

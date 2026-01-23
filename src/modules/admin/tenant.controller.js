@@ -32,7 +32,8 @@ exports.getAllTenants = async (req, res) => {
                     }
                 },
                 insurances: true,
-                documents: true
+                documents: true,
+                residents: true
             }
         });
 
@@ -61,6 +62,7 @@ exports.getAllTenants = async (req, res) => {
                 rentAmount: activeLease?.monthlyRent || 0,
                 insurance: t.insurances,
                 documents: t.documents,
+                residents: t.residents,
                 inviteToken: t.inviteToken,
                 hasPortalAccess: !!t.password
             };
@@ -77,21 +79,61 @@ exports.getAllTenants = async (req, res) => {
 exports.getTenantById = async (req, res) => {
     try {
         const { id } = req.params;
+        const tenantId = parseInt(id);
+        
         const tenant = await prisma.user.findUnique({
-            where: { id: parseInt(id) },
+            where: { id: tenantId },
             include: {
                 leases: {
                     include: { unit: true }
                 },
                 insurances: true,
-                documents: true
+                documents: true, // Direct ownership documents
+                residents: true
             }
         });
 
         if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
 
+        // Fetch documents linked via DocumentLink (entityType="USER", entityId=tenantId)
+        const linkedDocuments = await prisma.document.findMany({
+            where: {
+                links: {
+                    some: {
+                        entityType: 'USER',
+                        entityId: tenantId
+                    }
+                }
+            },
+            include: {
+                links: true
+            }
+        });
+
+        // Combine direct documents and linked documents, removing duplicates
+        const allDocumentsMap = new Map();
+        
+        // Add direct ownership documents
+        tenant.documents.forEach(doc => {
+            allDocumentsMap.set(doc.id, doc);
+        });
+        
+        // Add linked documents
+        linkedDocuments.forEach(doc => {
+            allDocumentsMap.set(doc.id, doc);
+        });
+
+        // Replace tenant.documents with combined list, formatting dates
+        tenant.documents = Array.from(allDocumentsMap.values()).map(doc => ({
+            ...doc,
+            expiryDate: doc.expiryDate ? doc.expiryDate.toISOString().split('T')[0] : null,
+            createdAt: doc.createdAt ? doc.createdAt.toISOString() : doc.createdAt,
+            updatedAt: doc.updatedAt ? doc.updatedAt.toISOString() : doc.updatedAt
+        }));
+
         res.json(tenant);
     } catch (error) {
+        console.error('Get Tenant By ID Error:', error);
         res.status(500).json({ message: 'Server error' });
     }
 };
@@ -99,7 +141,14 @@ exports.getTenantById = async (req, res) => {
 // POST /api/admin/tenants
 exports.createTenant = async (req, res) => {
     try {
-        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents, password } = req.body;
+        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents } = req.body;
+        let { password } = req.body;
+
+        // Generate a random numeric password for the tenant if none provided
+        if (!password) {
+            //password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
+            password = '123456';
+        }
 
         // Transaction to ensure atomicity
         const result = await prisma.$transaction(async (prisma) => {
@@ -125,26 +174,25 @@ exports.createTenant = async (req, res) => {
                     email,
                     phone,
                     type: type ? type.toUpperCase() : 'INDIVIDUAL',
-                    companyName: type === 'COMPANY' ? companyName : null,
-                    companyDetails: type === 'COMPANY' ? companyDetails : null,
-                    street: type === 'COMPANY' ? req.body.street : null,
-                    city: type === 'COMPANY' ? req.body.city : null,
-                    state: type === 'COMPANY' ? req.body.state : null,
-                    postalCode: type === 'COMPANY' ? req.body.postalCode : null,
-                    country: type === 'COMPANY' ? req.body.country : null,
+                    companyName: type === 'COMPANY' || type === 'Company' ? companyName : null,
+                    companyDetails: type === 'COMPANY' || type === 'Company' ? companyDetails : null,
+                    street: req.body.street || null,
+                    city: req.body.city || null,
+                    state: req.body.state || null,
+                    postalCode: req.body.postalCode || null,
+                    country: req.body.country || null,
                     role: 'TENANT',
                     buildingId: propertyId ? parseInt(propertyId) : null,
                     unitId: unitId ? parseInt(unitId) : null,
                     bedroomId: bedroomId ? parseInt(bedroomId) : null,
-                    // Hash password if provided
-                    password: password ? await bcrypt.hash(password, 10) : undefined,
+                    password: await bcrypt.hash(password, 10),
                     inviteToken,
                     inviteExpires,
                 }
             });
 
-            // 1.5 Handle Company Contacts
-            if (type === 'COMPANY' && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
+            // Handle Company Contacts
+            if ((type === 'COMPANY' || type === 'Company') && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
                 await prisma.companyContact.createMany({
                     data: req.body.companyContacts.map(c => ({
                         companyId: newUser.id,
@@ -154,17 +202,6 @@ exports.createTenant = async (req, res) => {
                         role: c.role
                     }))
                 });
-            }
-
-            // Send SMS if password and phone are present
-            let smsResult = { success: false, note: "Skipped (No password/phone)" };
-            if (password && phone) {
-                const message = `Your credentials for the Property Management App:\nEmail: ${email}\nPassword: ${password}\nLogin here: ${process.env.FRONTEND_URL || `https://property-n.kiaantechnology.com` || 'http://localhost:5173'}/login`;
-                console.log('Sending SMS...');
-
-                // AWAIT the result so we can send it back to frontend
-                smsResult = await smsService.sendSMS(phone, message);
-                console.log('SMS Result:', smsResult);
             }
 
             // 3. Handle Lease & Bedroom Logic
@@ -180,59 +217,47 @@ exports.createTenant = async (req, res) => {
                 }
             }
 
-            // 4. Create Lease if Unit/Bedroom available
-            let newLeaseId = null;
-            if (finalUnitId) {
-                const newLease = await prisma.lease.create({
-                    data: {
-                        tenantId: newUser.id,
-                        unitId: finalUnitId,
-                        status: 'DRAFT',
-                    }
-                });
-                newLeaseId = newLease.id;
-            }
+            // 4. Create Lease
+            // let newLeaseId = null;
+            // if (finalUnitId) {
+            //     const newLease = await prisma.lease.create({
+            //         data: {
+            //             tenantId: newUser.id,
+            //             unitId: finalUnitId,
+            //             bedroomId: finalBedroomId || null,
+            //             status: 'ACTIVE', // Default to active for simple setup
+            //         }
+            //     });
+            //     newLeaseId = newLease.id;
+            // }
 
-            // 5. Handle Residents with Lease Link
-            if (residents && Array.isArray(residents)) {
+            // 5. Handle Residents
+            if (residents && Array.isArray(residents) && residents.length > 0) {
                 await prisma.resident.createMany({
-                    data: residents.map(r => ({
+                    data: residents.filter(r => r.firstName || r.lastName).map(r => ({
                         tenantId: newUser.id,
                         leaseId: newLeaseId,
-                        firstName: r.firstName,
-                        lastName: r.lastName,
-                        email: r.email,
-                        phone: r.phone
+                        firstName: r.firstName || '',
+                        lastName: r.lastName || '',
                     }))
                 });
             }
 
-            return { newUser, smsResult };
+            return newUser;
         });
 
-        // Note: The previous logic returned newUser directly. 
-        // We need to adjust to return proper structure if we want smsResult.
-        // However, the transaction block above was returning `newUser` directly in the original code.
-        // I've modified the transaction to return { user, smsResult } in the chunk above.
-        // But wait, the transaction block is growing large. 
-        // Let's keep it simple: Perform SMS *after* transaction to avoid blocking DB commit, 
-        // BUT await it before res.json so frontend knows.
+        // Send SMS outside transaction
+        let smsResult = { success: false, note: "Skipped" };
+        if (phone) {
+            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            console.log('Attempting to send SMS to:', phone);
+            smsResult = await smsService.sendSMS(phone, message);
+        }
 
-        // Wait, the ReplacementChunk above put SMS *inside* transaction. 
-        // It's better to move it OUTSIDE transaction to not rollback DB on SMS failure 
-        // (unless we want that, but usually we don't).
-        // Let's fix this in the next tool call properly. For now, I will revert to a safer approach 
-        // in a single replace if possible, or careful multi-replace.
-
-        // actually, let's just return the user and do SMS outside.
-
-        res.status(201).json(result);
+        res.status(201).json({ ...result, smsResult });
     } catch (error) {
         console.error('Create Tenant Error:', error);
-        const errorMessage = process.env.NODE_ENV === 'development'
-            ? `Could not create tenant: ${error.message}`
-            : 'Could not create tenant. Please check the data and try again.';
-        res.status(500).json({ message: errorMessage, error: process.env.NODE_ENV === 'development' ? error : undefined });
+        res.status(500).json({ message: error.message || 'Could not create tenant.' });
     }
 };
 
@@ -272,6 +297,8 @@ exports.deleteTenant = async (req, res) => {
             await prisma.refreshToken.deleteMany({ where: { userId: id } });
             await prisma.invoice.deleteMany({ where: { tenantId: id } }); // Fix for FK constraint
             await prisma.refundAdjustment.deleteMany({ where: { tenantId: id } }); // Fix for FK constraint
+            await prisma.resident.deleteMany({ where: { tenantId: id } }); // Delete residents linked to this tenant
+            await prisma.companyContact.deleteMany({ where: { companyId: id } }); // Delete company contacts if this is a company tenant
             await prisma.message.deleteMany({
                 where: {
                     OR: [
@@ -280,6 +307,29 @@ exports.deleteTenant = async (req, res) => {
                     ]
                 }
             }); // Clean up messages
+            // Also delete documents linked via DocumentLink
+            const linkedDocuments = await prisma.document.findMany({
+                where: {
+                    links: {
+                        some: {
+                            entityType: 'USER',
+                            entityId: id
+                        }
+                    }
+                },
+                select: { id: true }
+            });
+            if (linkedDocuments.length > 0) {
+                const linkedDocIds = linkedDocuments.map(d => d.id);
+                // Delete the DocumentLinks first
+                await prisma.documentLink.deleteMany({
+                    where: {
+                        documentId: { in: linkedDocIds },
+                        entityType: 'USER',
+                        entityId: id
+                    }
+                });
+            }
 
             // 3. Delete user
             await prisma.user.delete({ where: { id } });
@@ -309,21 +359,21 @@ exports.updateTenant = async (req, res) => {
                     email,
                     phone,
                     type: type ? type.toUpperCase() : undefined,
-                    companyName: type === 'COMPANY' ? companyName : null,
-                    companyDetails: type === 'COMPANY' ? companyDetails : null,
-                    street: type === 'COMPANY' ? req.body.street : undefined,
-                    city: type === 'COMPANY' ? req.body.city : undefined,
-                    state: type === 'COMPANY' ? req.body.state : undefined,
-                    postalCode: type === 'COMPANY' ? req.body.postalCode : undefined,
-                    country: type === 'COMPANY' ? req.body.country : undefined,
+                    companyName: type === 'COMPANY' || type === 'Company' ? companyName : null,
+                    companyDetails: type === 'COMPANY' || type === 'Company' ? companyDetails : null,
+                    street: req.body.street || undefined,
+                    city: req.body.city || undefined,
+                    state: req.body.state || undefined,
+                    postalCode: req.body.postalCode || undefined,
+                    country: req.body.country || undefined,
                     buildingId: propertyId ? parseInt(propertyId) : null,
                     unitId: unitId ? parseInt(unitId) : null,
                     bedroomId: bedroomId ? parseInt(bedroomId) : null
                 }
             });
 
-            // 1.5 Sync Company Contacts
-            if (type === 'COMPANY' && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
+            // Handle Company Contacts Sync
+            if ((type === 'COMPANY' || type === 'Company') && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
                 await prisma.companyContact.deleteMany({ where: { companyId: id } });
                 await prisma.companyContact.createMany({
                     data: req.body.companyContacts.map(c => ({
@@ -336,32 +386,29 @@ exports.updateTenant = async (req, res) => {
                 });
             }
 
-            // 2. Sync Residents
+            // Sync Residents
             if (residents && Array.isArray(residents)) {
-                // Find current lease
                 const currentLease = await prisma.lease.findFirst({
-                    where: { tenantId: id, status: { in: ['Active', 'DRAFT'] } }
+                    where: { tenantId: id, status: { in: ['ACTIVE', 'Active', 'DRAFT'] } }
                 });
 
-                // Simple strategy: delete and recreate for residents
                 await prisma.resident.deleteMany({ where: { tenantId: id } });
-                await prisma.resident.createMany({
-                    data: residents.map(r => ({
-                        tenantId: id,
-                        leaseId: currentLease?.id,
-                        firstName: r.firstName,
-                        lastName: r.lastName,
-                        email: r.email,
-                        phone: r.phone
-                    }))
-                });
+                if (residents.length > 0) {
+                    await prisma.resident.createMany({
+                        data: residents.filter(r => r.firstName || r.lastName).map(r => ({
+                            tenantId: id,
+                            leaseId: currentLease?.id,
+                            firstName: r.firstName || '',
+                            lastName: r.lastName || '',
+                        }))
+                    });
+                }
             }
 
             // 3. Handle Bedroom/Unit Change
             let newUnitId = unitId ? parseInt(unitId) : null;
             let newBedroomId = bedroomId ? parseInt(bedroomId) : null;
 
-            // If bedroomId provided, get unitId from bedroom
             if (newBedroomId) {
                 const bedroom = await prisma.bedroom.findUnique({
                     where: { id: newBedroomId }
@@ -372,47 +419,44 @@ exports.updateTenant = async (req, res) => {
             }
 
             if (newUnitId) {
-                // Find any current lease (Active or Draft)
                 const currentLease = await prisma.lease.findFirst({
                     where: {
                         tenantId: id,
-                        status: { in: ['Active', 'DRAFT'] }
+                        status: { in: ['ACTIVE', 'Active', 'DRAFT'] }
                     }
                 });
 
-                // If switching units (and strictly if unitId is different)
                 if (currentLease && currentLease.unitId !== newUnitId) {
-                    // C. Handle old lease
-                    if (currentLease.status === 'Active') {
-                        // Terminate old active lease
+                    if (currentLease.status === 'ACTIVE' || currentLease.status === 'Active') {
                         await prisma.lease.update({
                             where: { id: currentLease.id },
-                            data: { status: 'Moved', endDate: new Date() }
+                            data: { status: 'MOVED', endDate: new Date() }
                         });
 
-                        // Create new DRAFT for the new unit
                         await prisma.lease.create({
                             data: {
                                 tenantId: id,
                                 unitId: newUnitId,
-                                status: 'DRAFT',
+                                bedroomId: newBedroomId || null,
+                                status: 'ACTIVE',
                             }
                         });
                     } else {
-                        // If it was just a DRAFT, just update it to the new unit
                         await prisma.lease.update({
                             where: { id: currentLease.id },
-                            data: { unitId: newUnitId }
+                            data: {
+                                unitId: newUnitId,
+                                bedroomId: newBedroomId || null
+                            }
                         });
                     }
-                }
-                // If no lease at all exists for this tenant, create one
-                else if (!currentLease) {
+                } else if (!currentLease) {
                     await prisma.lease.create({
                         data: {
                             tenantId: id,
                             unitId: newUnitId,
-                            status: 'DRAFT',
+                            bedroomId: newBedroomId || null,
+                            status: 'ACTIVE',
                         }
                     });
                 }
@@ -422,7 +466,6 @@ exports.updateTenant = async (req, res) => {
         });
 
         res.json(updatedTenant);
-
     } catch (error) {
         console.error('Update Tenant Error:', error);
         res.status(500).json({ message: 'Error updating tenant' });

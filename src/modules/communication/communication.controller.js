@@ -76,7 +76,7 @@ exports.getConversations = async (req, res) => {
         // If Tenant/Owner: fetch ONLY Admin(s).
 
         if (userRole === 'ADMIN') {
-            // Fetch all users except self
+            // Fetch all users except self (Owners and Tenants)
             const users = await prisma.user.findMany({
                 where: {
                     id: { not: userId },
@@ -91,14 +91,51 @@ exports.getConversations = async (req, res) => {
                 }
             });
 
-            // Optionally, attach unread count or last message here if needed
-            // For polling simplicity, we might just return the list first
-            // Enhancment: Fetch unread counts
+            // Fetch all Residents (they are separate entities, not Users)
+            const residents = await prisma.resident.findMany({
+                include: {
+                    tenant: {
+                        select: {
+                            id: true,
+                            name: true,
+                            email: true
+                        }
+                    },
+                    lease: {
+                        select: {
+                            id: true
+                        }
+                    }
+                }
+            });
 
-            const usersWithMetadata = await Promise.all(users.map(async (u) => {
+            // Format residents to match user structure for communication
+            const formattedResidents = residents.map(r => ({
+                id: `resident_${r.id}`, // Prefix to distinguish from user IDs
+                name: `${r.firstName} ${r.lastName}`.trim(),
+                role: 'RESIDENT',
+                email: r.email || r.tenant?.email || null,
+                phone: r.phone,
+                type: 'RESIDENT',
+                tenantId: r.tenantId,
+                tenantName: r.tenant?.name,
+                leaseId: r.leaseId,
+                isResident: true
+            }));
+
+            // Combine users and residents
+            const allRecipients = [...users, ...formattedResidents];
+
+            // Attach metadata (unread count, last message) - only for Users, not Residents
+            const recipientsWithMetadata = await Promise.all(allRecipients.map(async (recipient) => {
+                if (recipient.isResident) {
+                    // Residents don't have message history in the Message table
+                    return { ...recipient, unreadCount: 0, lastMessage: null };
+                }
+                
                 const unreadCount = await prisma.message.count({
                     where: {
-                        senderId: u.id,
+                        senderId: recipient.id,
                         receiverId: userId,
                         isRead: false
                     }
@@ -106,16 +143,16 @@ exports.getConversations = async (req, res) => {
                 const lastMessage = await prisma.message.findFirst({
                     where: {
                         OR: [
-                            { senderId: u.id, receiverId: userId },
-                            { senderId: userId, receiverId: u.id }
+                            { senderId: recipient.id, receiverId: userId },
+                            { senderId: userId, receiverId: recipient.id }
                         ]
                     },
                     orderBy: { createdAt: 'desc' }
                 });
-                return { ...u, unreadCount, lastMessage };
+                return { ...recipient, unreadCount, lastMessage };
             }));
 
-            res.json(usersWithMetadata);
+            res.json(recipientsWithMetadata);
 
         } else {
             // Find Admins to chat with

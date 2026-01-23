@@ -147,6 +147,7 @@ model Bedroom {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   unit          Unit     @relation(fields: [unitId], references: [id], map: "Bedroom_unitId_fkey")
+  leases        Lease[]
 
   @@index([unitId], map: "Bedroom_unitId_fkey")
   @@map("bedroom")
@@ -155,7 +156,9 @@ model Bedroom {
 model Lease {
   id              Int       @id @default(autoincrement())
   unitId          Int
+  bedroomId       Int?
   tenantId        Int
+  leaseType       LeaseType @default(FULL_UNIT)
   startDate       DateTime?
   endDate         DateTime?
   status          String    @default("Active")
@@ -165,6 +168,7 @@ model Lease {
   securityDeposit Decimal?
   tenant          User      @relation("TenantLeases", fields: [tenantId], references: [id], map: "Lease_tenantId_fkey")
   unit            Unit      @relation(fields: [unitId], references: [id], map: "Lease_unitId_fkey")
+  bedroom         Bedroom?  @relation(fields: [bedroomId], references: [id])
   invoices        Invoice[]
   insurances      Insurance[]
   documents       Document[]
@@ -447,7 +451,11 @@ model RefundAdjustment {
 enum TenantType {
   INDIVIDUAL
   COMPANY
-  RESIDENT
+}
+
+enum LeaseType {
+  FULL_UNIT
+  BEDROOM
 }
 
 enum Role {

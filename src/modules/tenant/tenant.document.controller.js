@@ -7,17 +7,52 @@ const axios = require('axios');
 exports.getDocuments = async (req, res) => {
     try {
         const userId = req.user.id;
-        const documents = await prisma.document.findMany({
-            where: { userId }
+        
+        // Fetch documents that are:
+        // 1. Directly owned by the tenant (userId = tenantId)
+        // 2. Linked to the tenant via DocumentLink (entityType="USER", entityId=tenantId)
+        const [directDocuments, linkedDocuments] = await Promise.all([
+            // Direct ownership
+            prisma.document.findMany({
+                where: { userId }
+            }),
+            // Linked via DocumentLink
+            prisma.document.findMany({
+                where: {
+                    links: {
+                        some: {
+                            entityType: 'USER',
+                            entityId: userId
+                        }
+                    }
+                }
+            })
+        ]);
+
+        // Combine and deduplicate by document ID
+        const allDocumentsMap = new Map();
+        
+        directDocuments.forEach(doc => {
+            allDocumentsMap.set(doc.id, doc);
+        });
+        
+        linkedDocuments.forEach(doc => {
+            allDocumentsMap.set(doc.id, doc);
         });
 
-        const formatted = documents.map(d => ({
+        const allDocuments = Array.from(allDocumentsMap.values());
+
+        const formatted = allDocuments.map(d => ({
             id: d.id,
             name: d.name,
             type: d.type,
             fileUrl: d.fileUrl,
-            date: d.createdAt.toISOString().split('T')[0]
+            date: d.createdAt.toISOString().split('T')[0],
+            expiryDate: d.expiryDate ? d.expiryDate.toISOString().split('T')[0] : null
         }));
+
+        // Sort by creation date, newest first
+        formatted.sort((a, b) => new Date(b.date) - new Date(a.date));
 
         res.json(formatted);
     } catch (e) {
@@ -32,8 +67,22 @@ exports.getDocumentById = async (req, res) => {
         const userId = req.user.id;
         const { id } = req.params;
 
+        // Check if document is owned by tenant OR linked to tenant
         const document = await prisma.document.findFirst({
-            where: { id: parseInt(id), userId }
+            where: {
+                id: parseInt(id),
+                OR: [
+                    { userId }, // Direct ownership
+                    {
+                        links: {
+                            some: {
+                                entityType: 'USER',
+                                entityId: userId
+                            }
+                        }
+                    }
+                ]
+            }
         });
 
         if (!document) return res.status(404).json({ message: 'Document not found' });
@@ -51,8 +100,22 @@ exports.downloadDocument = async (req, res) => {
         const userId = req.user.id;
         const { id } = req.params;
 
+        // Check if document is owned by tenant OR linked to tenant
         const document = await prisma.document.findFirst({
-            where: { id: parseInt(id), userId }
+            where: {
+                id: parseInt(id),
+                OR: [
+                    { userId }, // Direct ownership
+                    {
+                        links: {
+                            some: {
+                                entityType: 'USER',
+                                entityId: userId
+                            }
+                        }
+                    }
+                ]
+            }
         });
 
         if (!document || !document.fileUrl) {

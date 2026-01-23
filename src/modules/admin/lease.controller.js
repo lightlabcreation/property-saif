@@ -27,27 +27,29 @@ exports.downloadLeasePDF = async (req, res) => {
 exports.getLeaseHistory = async (req, res) => {
     try {
         const leases = await prisma.lease.findMany({
-            where: {
-                startDate: { not: null },
-                endDate: { not: null }
-            },
             include: {
                 tenant: true,
-                unit: true
+                unit: {
+                    include: { property: true }
+                },
+                bedroom: true
             },
-            orderBy: { startDate: 'desc' }
+            orderBy: { createdAt: 'desc' }
         });
 
         const formatted = leases.map(l => ({
             id: l.id,
-            unit: l.unit.name,
-            type: l.unit.rentalMode, // Uses FULL_UNIT or BEDROOM_WISE
-            scope: l.unit.rentalMode === 'BEDROOM_WISE' ? 'Per Bedroom' : 'Monthly',
-            tenant: l.tenant.name,
+            leaseType: l.leaseType === 'FULL_UNIT' ? 'Full Unit Lease' : 'Bedroom Lease',
+            buildingName: l.unit.property.civicNumber 
+                ? `${l.unit.property.name} - ${l.unit.property.civicNumber}`
+                : l.unit.property.name,
+            unit: l.unit.unitNumber || l.unit.name,
+            bedroom: l.bedroom ? l.bedroom.bedroomNumber : '-',
+            tenant: l.tenant.name || `${l.tenant.firstName || ''} ${l.tenant.lastName || ''}`.trim(),
             term: l.startDate && l.endDate
-                ? `${l.startDate.toISOString().substring(0, 7)} - ${l.endDate.toISOString().substring(0, 7)}`
-                : 'Date Pending (DRAFT)',
-            status: l.status.toLowerCase(),
+                ? `${l.startDate.toISOString().substring(0, 10)} to ${l.endDate.toISOString().substring(0, 10)}`
+                : 'Dates Pending',
+            status: l.status,
             startDate: l.startDate,
             endDate: l.endDate,
             monthlyRent: l.monthlyRent || 0
@@ -231,7 +233,9 @@ exports.activateLease = async (req, res) => {
                 where: { id },
                 data: {
                     status: 'Active',
-                    startDate: startDate
+                    startDate: startDate,
+                    leaseType: lease.tenant.bedroomId ? 'BEDROOM' : 'FULL_UNIT',
+                    bedroomId: lease.tenant.bedroomId
                 },
                 include: { unit: true }
             });
@@ -459,7 +463,9 @@ exports.createLease = async (req, res) => {
                 endDate: new Date(endDate),
                 monthlyRent: parseFloat(monthlyRent) || 0,
                 securityDeposit: parseFloat(securityDeposit) || 0,
-                status: 'Active'
+                status: 'Active',
+                leaseType: isBedroomLease ? 'BEDROOM' : 'FULL_UNIT',
+                bedroomId: bId
             };
 
             let lease;

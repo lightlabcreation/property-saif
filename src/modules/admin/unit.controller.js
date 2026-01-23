@@ -31,22 +31,31 @@ exports.getAllUnits = async (req, res) => {
             prisma.unit.count({ where })
         ]);
 
-        const formatted = units.map(u => ({
-            id: u.id,
-            unitNumber: u.unitNumber || u.name,
-            unit_identifier: u.unitNumber || u.name,
-            unitType: u.unitType,
-            floor: u.floor,
-            civicNumber: u.property.civicNumber,
-            building: u.property.civicNumber || u.property.name,
-            status: u.status,
-            propertyId: u.propertyId,
-            bedrooms: u.bedrooms,
-            rentalMode: u.rentalMode,
-            activeLeaseCount: u.leases ? u.leases.filter(l => l.status === 'Active').length : 0,
-            draftLeaseCount: u.leases ? u.leases.filter(l => l.status === 'DRAFT').length : 0,
-            activeLeases: u.leases ? u.leases.length : 0 // Keep for backward compatibility
-        }));
+        const formatted = units.map(u => {
+            // Format unit identifier as: {civicNumber}-{unitNumber} (e.g. 91-101)
+            const unitIdentifier = u.property.civicNumber && u.unitNumber
+                ? `${u.property.civicNumber}-${u.unitNumber}`
+                : u.unitNumber || u.name;
+            
+            return {
+                id: u.id,
+                unitNumber: u.unitNumber || u.name,
+                unit_identifier: unitIdentifier,
+                unitIdentifier: unitIdentifier, // Alias for consistency
+                unitType: u.unitType,
+                floor: u.floor,
+                civicNumber: u.property.civicNumber,
+                building: u.property.civicNumber || u.property.name,
+                buildingName: u.property.name,
+                status: u.status,
+                propertyId: u.propertyId,
+                bedrooms: u.bedrooms,
+                rentalMode: u.rentalMode,
+                activeLeaseCount: u.leases ? u.leases.filter(l => l.status === 'Active').length : 0,
+                draftLeaseCount: u.leases ? u.leases.filter(l => l.status === 'DRAFT').length : 0,
+                activeLeases: u.leases ? u.leases.length : 0 // Keep for backward compatibility
+            };
+        });
 
         res.json({
             data: formatted,
