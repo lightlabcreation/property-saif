@@ -106,9 +106,31 @@ exports.uploadDocument = async (req, res) => {
         let parsedLinks = [];
         try {
             parsedLinks = links ? JSON.parse(links) : [];
+            console.log('📎 Parsed links:', parsedLinks);
         } catch (e) {
             console.error('Failed to parse links:', e);
         }
+
+        // Extract primary link for legacy fields (for Prisma include to work)
+        const legacyFields = {};
+        parsedLinks.forEach(link => {
+            const entityType = link.entityType.toUpperCase();
+            const entityId = parseInt(link.entityId);
+
+            if (entityType === 'USER' && !legacyFields.userId) {
+                legacyFields.userId = entityId;
+            } else if (entityType === 'LEASE' && !legacyFields.leaseId) {
+                legacyFields.leaseId = entityId;
+            } else if (entityType === 'UNIT' && !legacyFields.unitId) {
+                legacyFields.unitId = entityId;
+            } else if (entityType === 'PROPERTY' && !legacyFields.propertyId) {
+                legacyFields.propertyId = entityId;
+            } else if (entityType === 'INVOICE' && !legacyFields.invoiceId) {
+                legacyFields.invoiceId = entityId;
+            }
+        });
+
+        console.log('🔗 Legacy fields extracted:', legacyFields);
 
         // Use service to create record and links
         const doc = await documentService.linkDocument({
@@ -116,8 +138,11 @@ exports.uploadDocument = async (req, res) => {
             type,
             fileUrl: `/uploads/${path.basename(uploadPath)}`,
             links: parsedLinks,
-            expiryDate
+            expiryDate,
+            ...legacyFields
         });
+
+        console.log('✅ Document created:', { id: doc.id, name: doc.name, leaseId: doc.leaseId, userId: doc.userId });
 
         res.status(201).json(doc);
     } catch (e) {

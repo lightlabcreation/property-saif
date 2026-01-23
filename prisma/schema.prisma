@@ -9,7 +9,7 @@ datasource db {
 
 model User {
   id                Int                @id @default(autoincrement())
-  email             String             @unique(map: "User_email_key")
+  email             String?            @unique(map: "User_email_key")
   password          String?
   name              String?
   firstName         String?
@@ -27,6 +27,8 @@ model User {
   buildingId        Int?
   unitId            Int?
   bedroomId         Int?
+  parentId          Int?
+  leaseId           Int?
   inviteToken       String?            @unique
   inviteExpires     DateTime?
   createdAt         DateTime           @default(now())
@@ -42,27 +44,15 @@ model User {
   refreshTokens     RefreshToken[]
   refundAdjustments RefundAdjustment[]
   tickets           Ticket[]
-  residents         Resident[]         @relation("TenantResidents")
+  parent            User?              @relation("TenantResidents", fields: [parentId], references: [id])
+  residents         User[]             @relation("TenantResidents")
+  residentLease     Lease?             @relation("LeaseResidents", fields: [leaseId], references: [id])
   communicationLogs CommunicationLog[]
 
   @@map("user")
 }
 
-model Resident {
-  id        Int      @id @default(autoincrement())
-  tenantId  Int
-  leaseId   Int?
-  firstName String
-  lastName  String
-  email     String?
-  phone     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  tenant    User     @relation("TenantResidents", fields: [tenantId], references: [id])
-  lease     Lease?   @relation(fields: [leaseId], references: [id])
 
-  @@map("resident")
-}
 
 model CompanyContact {
   id        Int      @id @default(autoincrement())
@@ -172,7 +162,7 @@ model Lease {
   invoices        Invoice[]
   insurances      Insurance[]
   documents       Document[]
-  residents       Resident[]
+  residents       User[]    @relation("LeaseResidents")
 
   @@index([tenantId], map: "Lease_tenantId_fkey")
   @@index([unitId], map: "Lease_unitId_fkey")
@@ -451,6 +441,7 @@ model RefundAdjustment {
 enum TenantType {
   INDIVIDUAL
   COMPANY
+  RESIDENT
 }
 
 enum LeaseType {

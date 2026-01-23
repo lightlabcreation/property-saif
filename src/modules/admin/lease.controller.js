@@ -40,7 +40,7 @@ exports.getLeaseHistory = async (req, res) => {
         const formatted = leases.map(l => ({
             id: l.id,
             leaseType: l.leaseType === 'FULL_UNIT' ? 'Full Unit Lease' : 'Bedroom Lease',
-            buildingName: l.unit.property.civicNumber 
+            buildingName: l.unit.property.civicNumber
                 ? `${l.unit.property.name} - ${l.unit.property.civicNumber}`
                 : l.unit.property.name,
             unit: l.unit.unitNumber || l.unit.name,
@@ -134,6 +134,12 @@ exports.deleteLease = async (req, res) => {
                 await tx.user.update({
                     where: { id: lease.tenantId },
                     data: { bedroomId: null, unitId: null, buildingId: null }
+                });
+
+                // Reset residents associated with this lease
+                await tx.user.updateMany({
+                    where: { leaseId: id, type: 'RESIDENT' },
+                    data: { leaseId: null }
                 });
 
                 // Actually delete the lease record
@@ -238,6 +244,12 @@ exports.activateLease = async (req, res) => {
                     bedroomId: lease.tenant.bedroomId
                 },
                 include: { unit: true }
+            });
+
+            // Sync tenant's residents to this lease
+            await tx.user.updateMany({
+                where: { parentId: tId, type: 'RESIDENT' },
+                data: { leaseId: id }
             });
 
             // 2. Resolve Lease Type and Update Statuses
@@ -387,6 +399,19 @@ exports.createLease = async (req, res) => {
         const bId = bedroomId ? parseInt(bedroomId) : null;
 
         const result = await prisma.$transaction(async (tx) => {
+            // Check Tenant Type - Residents cannot have direct leases
+            const targetTenant = await tx.user.findUnique({
+                where: { id: tId }
+            });
+
+            if (!targetTenant) {
+                throw new Error('Tenant not found');
+            }
+
+            if (targetTenant.type === 'RESIDENT') {
+                throw new Error('Residents cannot be assigned to leases directly. They must be linked to a billable tenant.');
+            }
+
             // Fetch unit with bedrooms and existing leases
             const unit = await tx.unit.findUnique({
                 where: { id: uId },

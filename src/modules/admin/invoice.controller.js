@@ -111,6 +111,10 @@ exports.createInvoice = async (req, res) => {
             return res.status(400).json({ message: 'Invoices can only be generated for ACTIVE leases.' });
         }
 
+        if (activeLease.tenant.type === 'RESIDENT') {
+            return res.status(400).json({ message: 'Invoices cannot be generated for Residents.' });
+        }
+
         // Note: RESIDENT is not a tenant type - only INDIVIDUAL and COMPANY are valid tenant types
         // Residents are separate entities linked to tenant leases, not direct lease holders
 

@@ -7,7 +7,7 @@ const smsService = require('../../services/sms.service');
 exports.getAllTenants = async (req, res) => {
     try {
         const { propertyId } = req.query;
-        const whereClause = { role: 'TENANT' };
+        const whereClause = { role: 'TENANT' }; // Show all tenants including residents as requested
 
         if (propertyId) {
             whereClause.leases = {
@@ -80,7 +80,7 @@ exports.getTenantById = async (req, res) => {
     try {
         const { id } = req.params;
         const tenantId = parseInt(id);
-        
+
         const tenant = await prisma.user.findUnique({
             where: { id: tenantId },
             include: {
@@ -112,12 +112,12 @@ exports.getTenantById = async (req, res) => {
 
         // Combine direct documents and linked documents, removing duplicates
         const allDocumentsMap = new Map();
-        
+
         // Add direct ownership documents
         tenant.documents.forEach(doc => {
             allDocumentsMap.set(doc.id, doc);
         });
-        
+
         // Add linked documents
         linkedDocuments.forEach(doc => {
             allDocumentsMap.set(doc.id, doc);
@@ -141,30 +141,49 @@ exports.getTenantById = async (req, res) => {
 // POST /api/admin/tenants
 exports.createTenant = async (req, res) => {
     try {
-        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents } = req.body;
-        let { password } = req.body;
+        const { firstName, lastName, email, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents, parentId } = req.body;
+        let { phone, password } = req.body;
 
-        // Generate a random numeric password for the tenant if none provided
-        if (!password) {
-            password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
-           // password = '123456';
+        // Normalize Phone (E.164 focus for Canadian/US)
+        if (phone) {
+            let cleanPhone = phone.replace(/[\s-()]/g, '');
+            if (cleanPhone.length === 10 && /^\d+$/.test(cleanPhone)) {
+                phone = '+1' + cleanPhone;
+            } else if (cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
+                phone = '+' + cleanPhone;
+            } else {
+                phone = cleanPhone;
+            }
+        }
+
+        const normalizedType = type ? type.toUpperCase() : 'INDIVIDUAL';
+
+        // 1. Password Logic (Skip for RESIDENT)
+        let hashedPassword = null;
+        if (normalizedType !== 'RESIDENT') {
+            if (!password) {
+                password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
+            }
+            hashedPassword = await bcrypt.hash(password, 10);
         }
 
         // Transaction to ensure atomicity
         const result = await prisma.$transaction(async (prisma) => {
-            // Check if email already exists
-            const existingUser = await prisma.user.findUnique({
-                where: { email }
-            });
+            // Check if email already exists (only if email is provided)
+            if (email) {
+                const existingUser = await prisma.user.findUnique({
+                    where: { email }
+                });
 
-            if (existingUser) {
-                throw new Error('A user with this email already exists');
+                if (existingUser) {
+                    throw new Error('A user with this email already exists');
+                }
             }
 
-            // 1. Create User (Tenant)
-            const inviteToken = crypto.randomBytes(32).toString('hex');
-            const inviteExpires = new Date();
-            inviteExpires.setDate(inviteExpires.getDate() + 7); // 7 days
+            // 1. Create User (Tenant/Resident)
+            const inviteToken = normalizedType !== 'RESIDENT' ? crypto.randomBytes(32).toString('hex') : null;
+            const inviteExpires = normalizedType !== 'RESIDENT' ? new Date() : null;
+            if (inviteExpires) inviteExpires.setDate(inviteExpires.getDate() + 7);
 
             const newUser = await prisma.user.create({
                 data: {
@@ -173,9 +192,9 @@ exports.createTenant = async (req, res) => {
                     lastName,
                     email,
                     phone,
-                    type: type ? type.toUpperCase() : 'INDIVIDUAL',
-                    companyName: type === 'COMPANY' || type === 'Company' ? companyName : null,
-                    companyDetails: type === 'COMPANY' || type === 'Company' ? companyDetails : null,
+                    type: normalizedType,
+                    companyName: normalizedType === 'COMPANY' ? companyName : null,
+                    companyDetails: normalizedType === 'COMPANY' ? companyDetails : null,
                     street: req.body.street || null,
                     city: req.body.city || null,
                     state: req.body.state || null,
@@ -185,14 +204,15 @@ exports.createTenant = async (req, res) => {
                     buildingId: propertyId ? parseInt(propertyId) : null,
                     unitId: unitId ? parseInt(unitId) : null,
                     bedroomId: bedroomId ? parseInt(bedroomId) : null,
-                    password: await bcrypt.hash(password, 10),
+                    parentId: parentId ? parseInt(parentId) : null,
+                    password: hashedPassword,
                     inviteToken,
                     inviteExpires,
                 }
             });
 
             // Handle Company Contacts
-            if ((type === 'COMPANY' || type === 'Company') && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
+            if (normalizedType === 'COMPANY' && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
                 await prisma.companyContact.createMany({
                     data: req.body.companyContacts.map(c => ({
                         companyId: newUser.id,
@@ -204,41 +224,16 @@ exports.createTenant = async (req, res) => {
                 });
             }
 
-            // 3. Handle Lease & Bedroom Logic
-            let finalUnitId = unitId ? parseInt(unitId) : null;
-            let finalBedroomId = bedroomId ? parseInt(bedroomId) : null;
-
-            if (finalBedroomId) {
-                const bedroom = await prisma.bedroom.findUnique({
-                    where: { id: finalBedroomId }
-                });
-                if (bedroom) {
-                    finalUnitId = bedroom.unitId;
-                }
-            }
-
-            // 4. Create Lease
-            // let newLeaseId = null;
-            // if (finalUnitId) {
-            //     const newLease = await prisma.lease.create({
-            //         data: {
-            //             tenantId: newUser.id,
-            //             unitId: finalUnitId,
-            //             bedroomId: finalBedroomId || null,
-            //             status: 'ACTIVE', // Default to active for simple setup
-            //         }
-            //     });
-            //     newLeaseId = newLease.id;
-            // }
-
-            // 5. Handle Residents
-            if (residents && Array.isArray(residents) && residents.length > 0) {
-                await prisma.resident.createMany({
+            // 5. Handle Sub-Residents (If any provided for Individual/Company)
+            if (normalizedType !== 'RESIDENT' && residents && Array.isArray(residents) && residents.length > 0) {
+                await prisma.user.createMany({
                     data: residents.filter(r => r.firstName || r.lastName).map(r => ({
-                        tenantId: newUser.id,
-                        leaseId: newLeaseId,
                         firstName: r.firstName || '',
                         lastName: r.lastName || '',
+                        name: `${r.firstName || ''} ${r.lastName || ''}`.trim(),
+                        parentId: newUser.id,
+                        role: 'TENANT',
+                        type: 'RESIDENT'
                     }))
                 });
             }
@@ -246,9 +241,9 @@ exports.createTenant = async (req, res) => {
             return newUser;
         });
 
-        // Send SMS outside transaction
-        let smsResult = { success: false, note: "Skipped" };
-        if (phone) {
+        // 6. SMS Logic (Skip for RESIDENT)
+        let smsResult = { success: true, skipped: true };
+        if (normalizedType !== 'RESIDENT' && password && phone && email) {
             const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
             console.log('Attempting to send SMS to:', phone);
             smsResult = await smsService.sendSMS(phone, message);
@@ -297,7 +292,7 @@ exports.deleteTenant = async (req, res) => {
             await prisma.refreshToken.deleteMany({ where: { userId: id } });
             await prisma.invoice.deleteMany({ where: { tenantId: id } }); // Fix for FK constraint
             await prisma.refundAdjustment.deleteMany({ where: { tenantId: id } }); // Fix for FK constraint
-            await prisma.resident.deleteMany({ where: { tenantId: id } }); // Delete residents linked to this tenant
+            await prisma.user.deleteMany({ where: { parentId: id } }); // Delete residents linked to this tenant
             await prisma.companyContact.deleteMany({ where: { companyId: id } }); // Delete company contacts if this is a company tenant
             await prisma.message.deleteMany({
                 where: {
@@ -346,7 +341,22 @@ exports.deleteTenant = async (req, res) => {
 exports.updateTenant = async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const { firstName, lastName, email, phone, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents } = req.body;
+        const { firstName, lastName, email, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents, parentId } = req.body;
+        let { phone } = req.body;
+
+        // Normalize Phone (E.164 focus for Canadian/US)
+        if (phone) {
+            let cleanPhone = phone.replace(/[\s-()]/g, '');
+            if (cleanPhone.length === 10 && /^\d+$/.test(cleanPhone)) {
+                phone = '+1' + cleanPhone;
+            } else if (cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
+                phone = '+' + cleanPhone;
+            } else {
+                phone = cleanPhone;
+            }
+        }
+
+        const normalizedType = type ? type.toUpperCase() : undefined;
 
         const updatedTenant = await prisma.$transaction(async (prisma) => {
             // 1. Update basic info
@@ -358,9 +368,9 @@ exports.updateTenant = async (req, res) => {
                     lastName,
                     email,
                     phone,
-                    type: type ? type.toUpperCase() : undefined,
-                    companyName: type === 'COMPANY' || type === 'Company' ? companyName : null,
-                    companyDetails: type === 'COMPANY' || type === 'Company' ? companyDetails : null,
+                    type: normalizedType,
+                    companyName: normalizedType === 'COMPANY' ? companyName : null,
+                    companyDetails: normalizedType === 'COMPANY' ? companyDetails : null,
                     street: req.body.street || undefined,
                     city: req.body.city || undefined,
                     state: req.body.state || undefined,
@@ -368,12 +378,13 @@ exports.updateTenant = async (req, res) => {
                     country: req.body.country || undefined,
                     buildingId: propertyId ? parseInt(propertyId) : null,
                     unitId: unitId ? parseInt(unitId) : null,
-                    bedroomId: bedroomId ? parseInt(bedroomId) : null
+                    bedroomId: bedroomId ? parseInt(bedroomId) : null,
+                    parentId: parentId ? parseInt(parentId) : null
                 }
             });
 
             // Handle Company Contacts Sync
-            if ((type === 'COMPANY' || type === 'Company') && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
+            if (normalizedType === 'COMPANY' && req.body.companyContacts && Array.isArray(req.body.companyContacts)) {
                 await prisma.companyContact.deleteMany({ where: { companyId: id } });
                 await prisma.companyContact.createMany({
                     data: req.body.companyContacts.map(c => ({
@@ -386,71 +397,59 @@ exports.updateTenant = async (req, res) => {
                 });
             }
 
-            // Sync Residents
-            if (residents && Array.isArray(residents)) {
+            // Sync Residents (for Individual/Company)
+            if (normalizedType !== 'RESIDENT' && residents && Array.isArray(residents)) {
                 const currentLease = await prisma.lease.findFirst({
                     where: { tenantId: id, status: { in: ['ACTIVE', 'Active', 'DRAFT'] } }
                 });
 
-                await prisma.resident.deleteMany({ where: { tenantId: id } });
+                await prisma.user.deleteMany({ where: { parentId: id } });
                 if (residents.length > 0) {
-                    await prisma.resident.createMany({
+                    await prisma.user.createMany({
                         data: residents.filter(r => r.firstName || r.lastName).map(r => ({
-                            tenantId: id,
+                            parentId: id,
                             leaseId: currentLease?.id,
                             firstName: r.firstName || '',
                             lastName: r.lastName || '',
+                            name: `${r.firstName || ''} ${r.lastName || ''}`.trim(),
+                            role: 'TENANT',
+                            type: 'RESIDENT'
                         }))
                     });
                 }
             }
 
-            // 3. Handle Bedroom/Unit Change
-            let newUnitId = unitId ? parseInt(unitId) : null;
-            let newBedroomId = bedroomId ? parseInt(bedroomId) : null;
+            return user;
+        });
 
-            if (newBedroomId) {
-                const bedroom = await prisma.bedroom.findUnique({
-                    where: { id: newBedroomId }
-                });
-                if (bedroom) {
-                    newUnitId = bedroom.unitId;
-                }
+        // 3. Handle Bedroom/Unit Change (Logic now relies on the transaction result or parameters)
+        let newUnitId = unitId ? parseInt(unitId) : null;
+        let newBedroomId = bedroomId ? parseInt(bedroomId) : null;
+
+        if (newBedroomId) {
+            const bedroom = await prisma.bedroom.findUnique({
+                where: { id: newBedroomId }
+            });
+            if (bedroom) {
+                newUnitId = bedroom.unitId;
             }
+        }
 
-            if (newUnitId) {
-                const currentLease = await prisma.lease.findFirst({
-                    where: {
-                        tenantId: id,
-                        status: { in: ['ACTIVE', 'Active', 'DRAFT'] }
-                    }
-                });
+        if (newUnitId) {
+            const currentLease = await prisma.lease.findFirst({
+                where: {
+                    tenantId: id,
+                    status: { in: ['ACTIVE', 'Active', 'DRAFT'] }
+                }
+            });
 
-                if (currentLease && currentLease.unitId !== newUnitId) {
-                    if (currentLease.status === 'ACTIVE' || currentLease.status === 'Active') {
-                        await prisma.lease.update({
-                            where: { id: currentLease.id },
-                            data: { status: 'MOVED', endDate: new Date() }
-                        });
+            if (currentLease && currentLease.unitId !== newUnitId) {
+                if (currentLease.status === 'ACTIVE' || currentLease.status === 'Active') {
+                    await prisma.lease.update({
+                        where: { id: currentLease.id },
+                        data: { status: 'MOVED', endDate: new Date() }
+                    });
 
-                        await prisma.lease.create({
-                            data: {
-                                tenantId: id,
-                                unitId: newUnitId,
-                                bedroomId: newBedroomId || null,
-                                status: 'ACTIVE',
-                            }
-                        });
-                    } else {
-                        await prisma.lease.update({
-                            where: { id: currentLease.id },
-                            data: {
-                                unitId: newUnitId,
-                                bedroomId: newBedroomId || null
-                            }
-                        });
-                    }
-                } else if (!currentLease) {
                     await prisma.lease.create({
                         data: {
                             tenantId: id,
@@ -459,11 +458,26 @@ exports.updateTenant = async (req, res) => {
                             status: 'ACTIVE',
                         }
                     });
+                } else {
+                    await prisma.lease.update({
+                        where: { id: currentLease.id },
+                        data: {
+                            unitId: newUnitId,
+                            bedroomId: newBedroomId || null
+                        }
+                    });
                 }
+            } else if (!currentLease) {
+                await prisma.lease.create({
+                    data: {
+                        tenantId: id,
+                        unitId: newUnitId,
+                        bedroomId: newBedroomId || null,
+                        status: 'ACTIVE',
+                    }
+                });
             }
-
-            return user;
-        });
+        }
 
         res.json(updatedTenant);
     } catch (error) {

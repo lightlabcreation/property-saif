@@ -91,17 +91,18 @@ exports.getConversations = async (req, res) => {
                 }
             });
 
-            // Fetch all Residents (they are separate entities, not Users)
-            const residents = await prisma.resident.findMany({
+            // Fetch all Residents (Occupants)
+            const residents = await prisma.user.findMany({
+                where: { type: 'RESIDENT' },
                 include: {
-                    tenant: {
+                    parent: {
                         select: {
                             id: true,
                             name: true,
                             email: true
                         }
                     },
-                    lease: {
+                    residentLease: {
                         select: {
                             id: true
                         }
@@ -112,13 +113,13 @@ exports.getConversations = async (req, res) => {
             // Format residents to match user structure for communication
             const formattedResidents = residents.map(r => ({
                 id: `resident_${r.id}`, // Prefix to distinguish from user IDs
-                name: `${r.firstName} ${r.lastName}`.trim(),
+                name: r.name || `${r.firstName} ${r.lastName}`.trim(),
                 role: 'RESIDENT',
-                email: r.email || r.tenant?.email || null,
+                email: r.email || r.parent?.email || null,
                 phone: r.phone,
                 type: 'RESIDENT',
-                tenantId: r.tenantId,
-                tenantName: r.tenant?.name,
+                tenantId: r.parentId,
+                tenantName: r.parent?.name,
                 leaseId: r.leaseId,
                 isResident: true
             }));
@@ -132,7 +133,7 @@ exports.getConversations = async (req, res) => {
                     // Residents don't have message history in the Message table
                     return { ...recipient, unreadCount: 0, lastMessage: null };
                 }
-                
+
                 const unreadCount = await prisma.message.count({
                     where: {
                         senderId: recipient.id,

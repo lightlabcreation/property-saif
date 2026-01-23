@@ -85,12 +85,22 @@ exports.getReports = async (req, res) => {
             };
         }).sort((a, b) => b.revenue - a.revenue).slice(0, 5); // Top 5
 
+        // Tenant vs Resident counts
+        const tenantCount = await prisma.user.count({
+            where: { role: 'TENANT', type: { in: ['INDIVIDUAL', 'COMPANY'] } }
+        });
+        const residentCount = await prisma.user.count({
+            where: { role: 'TENANT', type: 'RESIDENT' }
+        });
+
         res.json({
             kpi: {
                 totalRevenue,
                 occupancyRate,
                 activeLeases,
-                outstandingDues
+                outstandingDues,
+                tenantCount,
+                residentCount
             },
             monthlyRevenue: Object.keys(monthlyMap).map(k => ({ month: k, amount: monthlyMap[k] })),
             leaseDistribution: { fullUnit: fullUnitCount, bedroom: bedroomCount },
