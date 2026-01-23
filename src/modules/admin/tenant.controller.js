@@ -146,8 +146,8 @@ exports.createTenant = async (req, res) => {
 
         // Generate a random numeric password for the tenant if none provided
         if (!password) {
-            //password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
-            password = '123456';
+            password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
+           // password = '123456';
         }
 
         // Transaction to ensure atomicity
