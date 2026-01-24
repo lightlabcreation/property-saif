@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const prisma = require('../../config/prisma');
 const smsService = require('../../services/sms.service');
+const emailService = require('../../services/email.service');
 
 // GET /api/admin/tenants
 exports.getAllTenants = async (req, res) => {
@@ -247,6 +248,17 @@ exports.createTenant = async (req, res) => {
             const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
             console.log('Attempting to send SMS to:', phone);
             smsResult = await smsService.sendSMS(phone, message);
+        }
+
+        // 7. Email Logic (Skip for RESIDENT) - Isolated and Non-blocking
+        if (normalizedType !== 'RESIDENT' && password && email) {
+            const emailSubject = 'Welcome to Property Management - Your Login Credentials';
+            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+
+            // Non-blocking fire and forget, error handled within service
+            emailService.sendEmail(email, emailSubject, emailText)
+                .then(res => console.log('[createTenant] Email send attempted:', res.success ? 'Success' : 'Failed'))
+                .catch(err => console.error('[createTenant] Email send unhandled error:', err));
         }
 
         res.status(201).json({ ...result, smsResult });
