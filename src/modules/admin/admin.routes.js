@@ -17,6 +17,7 @@ const invoiceController = require('./invoice.controller');
 const maintenanceController = require('./maintenance.controller');
 const accountingController = require('./accounting.controller');
 const communicationController = require('./communication.controller');
+const messageController = require('./message.controller');
 const analyticsController = require('./analytics.controller');
 const leaseController = require('./lease.controller');
 const insuranceController = require('./insurance.controller');
@@ -52,6 +53,7 @@ router.post('/invoices/batch', invoiceController.runBatchInvoicing);
 
 const paymentController = require('./payment.controller');
 router.get('/payments', paymentController.getReceivedPayments);
+router.post('/payments', paymentController.recordPayment);
 router.get('/outstanding-dues', paymentController.getOutstandingDues);
 router.get('/payments/:id/download', paymentController.downloadReceiptPDF);
 
@@ -80,6 +82,7 @@ router.put('/maintenance/:id', maintenanceController.updateTask);
 router.get('/accounting/transactions', accountingController.getTransactions);
 router.post('/accounting/transactions', accountingController.createTransaction);
 
+router.get('/communication/emails', communicationController.getEmailLogs);
 router.get('/communication', communicationController.getHistory);
 router.post('/communication', communicationController.sendMessage);
 
@@ -105,5 +108,10 @@ router.get('/documents', documentController.getAllDocuments);
 router.post('/documents/upload', documentController.uploadDocument);
 router.get('/documents/:id/download', documentController.downloadDocument);
 router.delete('/documents/:id', documentController.deleteDocument);
+
+// Message routes
+router.get('/messages', messageController.getMessages);
+router.post('/messages', messageController.sendMessage);
+router.put('/messages/:id/read', messageController.markAsRead);
 
 module.exports = router;

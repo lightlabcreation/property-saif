@@ -1,5 +1,6 @@
 const prisma = require('../../config/prisma');
 const https = require('https');
+const { uploadToCloudinary } = require('../../config/cloudinary');
 
 // GET /api/admin/tickets
 exports.getAllTickets = async (req, res) => {
@@ -47,7 +48,13 @@ exports.getAllTickets = async (req, res) => {
                 date: t.createdAt.toISOString().split('T')[0], // For frontend consistency
                 // Attachments
                 // Attachments
-                attachments: t.attachmentUrls ? JSON.parse(t.attachmentUrls) : [],
+                attachments: (() => {
+                    try {
+                        return t.attachmentUrls ? JSON.parse(t.attachmentUrls) : [];
+                    } catch (e) {
+                        return [];
+                    }
+                })(),
                 tenantDetails: {
                     name: t.user.name,
                     property: activeLease ? activeLease.unit.property.name : 'N/A',
@@ -99,6 +106,24 @@ exports.createTicket = async (req, res) => {
     try {
         const { tenantId, subject, description, priority, propertyId, unitId } = req.body;
 
+        const attachmentUrls = [];
+
+        // Handle Images upload
+        if (req.files && req.files.images) {
+            const images = Array.isArray(req.files.images) ? req.files.images : [req.files.images];
+            for (const img of images) {
+                const result = await uploadToCloudinary(img.tempFilePath, 'tickets/images');
+                attachmentUrls.push({ type: 'image', url: result.secure_url });
+            }
+        }
+
+        // Handle Video upload
+        if (req.files && req.files.video) {
+            const video = req.files.video;
+            const result = await uploadToCloudinary(video.tempFilePath, 'tickets/videos');
+            attachmentUrls.push({ type: 'video', url: result.secure_url });
+        }
+
         // tenantId is user.id
         const newTicket = await prisma.ticket.create({
             data: {
@@ -109,7 +134,8 @@ exports.createTicket = async (req, res) => {
                 category: req.body.category,
                 status: 'Open',
                 propertyId: propertyId ? parseInt(propertyId) : null,
-                unitId: unitId ? parseInt(unitId) : null
+                unitId: unitId ? parseInt(unitId) : null,
+                attachmentUrls: attachmentUrls.length > 0 ? JSON.stringify(attachmentUrls) : null
             }
         });
 
@@ -132,7 +158,12 @@ exports.getTicketAttachment = async (req, res) => {
             return res.status(404).json({ message: 'Attachment not found' });
         }
 
-        const attachments = JSON.parse(ticket.attachmentUrls);
+        let attachments;
+        try {
+            attachments = JSON.parse(ticket.attachmentUrls);
+        } catch (e) {
+            return res.status(500).json({ message: 'Corrupted attachment data' });
+        }
         const attachment = attachments[parseInt(attachmentId)];
 
         if (!attachment || !attachment.url) {

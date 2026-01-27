@@ -1,38 +1,74 @@
 const prisma = require('../../config/prisma');
-const bcrypt = require('bcrypt'); // Added bcrypt
+const bcrypt = require('bcrypt');
+const smsService = require('../../services/sms.service');
+const emailService = require('../../services/email.service');
 
 exports.getDashboardStats = async (req, res) => {
-    // ... existing getDashboardStats code ...
-
     try {
+        const { ownerId } = req.query;
+        console.log('Dashboard Stats - Received ownerId:', ownerId);
+        const parsedOwnerId = ownerId && ownerId !== 'null' && ownerId !== '' ? parseInt(ownerId) : null;
+
+        let propertyIds = [];
+        if (parsedOwnerId) {
+            const ownerProperties = await prisma.property.findMany({
+                where: { ownerId: parsedOwnerId },
+                select: { id: true }
+            });
+            propertyIds = ownerProperties.map(p => p.id);
+            console.log('Dashboard Stats - Owner Property IDs:', propertyIds);
+        }
+
+        // Base filters
+        const propertyOnlyFilter = parsedOwnerId ? { ownerId: parsedOwnerId } : {};
+        const unitFilter = parsedOwnerId ? { propertyId: { in: propertyIds } } : {};
+        const genericFilter = parsedOwnerId ? { unit: { propertyId: { in: propertyIds } } } : {};
+
         // 1. Total Properties
-        const totalProperties = await prisma.property.count();
+        const totalProperties = await prisma.property.count({
+            where: propertyOnlyFilter
+        });
 
         // 2. Total Units
-        const totalUnits = await prisma.unit.count();
+        const totalUnits = await prisma.unit.count({
+            where: unitFilter
+        });
 
         // 3. Occupancy (Occupied vs Vacant)
         const occupiedUnits = await prisma.unit.count({
-            where: { status: 'Occupied' },
+            where: {
+                status: 'Occupied',
+                ...unitFilter
+            },
         });
         const vacantUnits = totalUnits - occupiedUnits;
 
-        // 4. Revenue Calculation (Requirement 7)
-        // Projected Revenue = Sum of rent from all active leases
+        // 4. Revenue Calculation
         const leaseAgg = await prisma.lease.aggregate({
-            where: { status: 'Active' },
+            where: {
+                status: 'Active',
+                unit: { propertyId: { in: propertyIds } }
+            },
             _sum: { monthlyRent: true }
         });
         const projectedRevenue = parseFloat(leaseAgg._sum.monthlyRent) || 0;
 
-        // Actual Revenue = Sum of paidAmount from all invoices
         const invoiceAgg = await prisma.invoice.aggregate({
+            where: {
+                unit: { propertyId: { in: propertyIds } }
+            },
             _sum: { paidAmount: true }
         });
         const actualRevenue = parseFloat(invoiceAgg._sum.paidAmount) || 0;
 
-        // 5. Recent Activity (Latest 5 tickets)
+        // 5. Recent Activity (Tickets - Using ID filter for safety)
         const recentTickets = await prisma.ticket.findMany({
+            where: parsedOwnerId ? {
+                OR: [
+                    { propertyId: { in: propertyIds } },
+                    { unitId: { in: propertyIds.length > 0 ? (await prisma.unit.findMany({ where: { propertyId: { in: propertyIds } }, select: { id: true } })).map(u => u.id) : [] } }
+                ]
+            } : {},
             take: 5,
             orderBy: { createdAt: 'desc' },
             include: { user: true }
@@ -41,14 +77,26 @@ exports.getDashboardStats = async (req, res) => {
 
         // 6. Insurance Alerts
         const today = new Date();
+        const insuranceFilter = parsedOwnerId ? {
+            OR: [
+                { unit: { propertyId: { in: propertyIds } } },
+                { lease: { unit: { propertyId: { in: propertyIds } } } }
+            ]
+        } : {};
+
         const expiredInsurance = await prisma.insurance.count({
-            where: { endDate: { lt: today } }
+            where: {
+                endDate: { lt: today },
+                ...insuranceFilter
+            }
         });
+
         const soonDate = new Date();
         soonDate.setDate(today.getDate() + 30);
         const expiringSoon = await prisma.insurance.count({
             where: {
-                endDate: { gt: today, lte: soonDate }
+                endDate: { gt: today, lte: soonDate },
+                ...insuranceFilter
             }
         });
 
@@ -235,7 +283,8 @@ exports.createProperty = async (req, res) => {
             if (postalCode) fullAddress += ` ${postalCode}`;
         }
 
-        // Create property with auto-generated units to match the count
+        // Create property without auto-generating units
+        // Units should be created explicitly by the user, not automatically
         const property = await prisma.property.create({
             data: {
                 name,
@@ -246,13 +295,7 @@ exports.createProperty = async (req, res) => {
                 city: city || null,
                 province: province || null,
                 postalCode: postalCode || null,
-                ownerId: ownerId ? parseInt(ownerId) : null,
-                units: {
-                    create: Array.from({ length: parseInt(units) || 0 }).map((_, i) => ({
-                        name: `Unit ${i + 1}`,
-                        status: 'Vacant'
-                    }))
-                }
+                ownerId: ownerId ? parseInt(ownerId) : null
             },
             include: { units: true, owner: true }
         });
@@ -315,35 +358,8 @@ exports.updateProperty = async (req, res) => {
             }
         });
 
-        // Handle unit count changes
-        const currentCount = currentProperty.units.length;
-        const targetCount = parseInt(units);
-
-        if (targetCount > currentCount) {
-            // Add new units
-            const unitsToAdd = targetCount - currentCount;
-            await prisma.unit.createMany({
-                data: Array.from({ length: unitsToAdd }).map((_, i) => ({
-                    name: `Unit ${currentCount + i + 1}`,
-                    propertyId: parseInt(id),
-                    status: 'Vacant'
-                }))
-            });
-        } else if (targetCount < currentCount) {
-            // Remove excess vacant units (only remove vacant units to avoid data loss)
-            const unitsToRemove = currentCount - targetCount;
-            const vacantUnits = currentProperty.units
-                .filter(u => u.status === 'Vacant')
-                .slice(0, unitsToRemove);
-
-            if (vacantUnits.length > 0) {
-                await prisma.unit.deleteMany({
-                    where: {
-                        id: { in: vacantUnits.map(u => u.id) }
-                    }
-                });
-            }
-        }
+        // Note: Units are no longer auto-created or deleted based on count
+        // Units should be managed explicitly by the user through unit management endpoints
 
         // Refetch to get updated property with current unit count
         const updatedProperty = await prisma.property.findUnique({
@@ -398,20 +414,26 @@ exports.getOwners = async (req, res) => {
             include: {
                 properties: {
                     include: { units: true }
-                }
+                },
+                company: true
             }
         });
 
         const formatted = owners.map(o => {
-            const totalUnits = o.properties.reduce((acc, p) => acc + p.units.length, 0);
+            // Units from directly owned properties
+            const directUnits = o.properties.reduce((acc, p) => acc + p.units.length, 0);
             const propertyNames = o.properties.map(p => p.name);
+
             return {
                 id: o.id,
                 name: o.name,
                 email: o.email,
                 phone: o.phone,
+                companyId: o.companyId,
+                companyName: o.company?.name || o.companyName || '',
+                isPrimaryContact: o.company?.primaryContactId === o.id,
                 properties: propertyNames,
-                totalUnits,
+                totalUnits: directUnits,
                 status: 'Active'
             };
         });
@@ -425,10 +447,27 @@ exports.getOwners = async (req, res) => {
 
 exports.createOwner = async (req, res) => {
     try {
-        const { firstName, lastName, name, email, phone, password, propertyIds } = req.body;
+        const { firstName, lastName, name, email, phone, propertyIds, companyName, companyId, isPrimary } = req.body;
+        let { password } = req.body;
 
         const existing = await prisma.user.findUnique({ where: { email } });
         if (existing) return res.status(400).json({ message: 'Email already exists' });
+
+        // Handle Company Logic
+        let targetCompanyId = companyId ? parseInt(companyId) : null;
+        if (!targetCompanyId && companyName) {
+            const company = await prisma.company.upsert({
+                where: { name: companyName },
+                update: {},
+                create: { name: companyName }
+            });
+            targetCompanyId = company.id;
+        }
+
+        // Auto-generate password if not provided
+        if (!password) {
+            password = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit random number
+        }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -439,6 +478,8 @@ exports.createOwner = async (req, res) => {
                 name: name || `${firstName} ${lastName}`,
                 email,
                 phone,
+                companyName,
+                companyId: targetCompanyId,
                 password: hashedPassword,
                 role: 'OWNER',
                 properties: {
@@ -447,7 +488,45 @@ exports.createOwner = async (req, res) => {
             }
         });
 
-        res.status(201).json(newOwner);
+        // Update Company primary contact if requested or if it's the first user
+        if (targetCompanyId) {
+            const company = await prisma.company.findUnique({ where: { id: targetCompanyId } });
+            if (!company.primaryContactId || isPrimary) {
+                await prisma.company.update({
+                    where: { id: targetCompanyId },
+                    data: { primaryContactId: newOwner.id }
+                });
+            }
+
+            // Sync Properties to Company
+            if (propertyIds?.length > 0) {
+                await prisma.property.updateMany({
+                    where: { id: { in: propertyIds.map(id => parseInt(id)) } },
+                    data: { companyId: targetCompanyId }
+                });
+            }
+        }
+
+        // SMS Logic
+        let smsResult = { success: true, skipped: true };
+        if (phone && email) {
+            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            console.log('Attempting to send SMS to:', phone);
+            smsResult = await smsService.sendSMS(phone, message);
+        }
+
+        // Email Logic
+        if (email) {
+            const emailSubject = 'Welcome to Property Management - Your Login Credentials';
+            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+
+            // Non-blocking fire and forget
+            emailService.sendEmail(email, emailSubject, emailText)
+                .then(res => console.log('[createOwner] Email send attempted:', res.success ? 'Success' : 'Failed'))
+                .catch(err => console.error('[createOwner] Email send unhandled error:', err));
+        }
+
+        res.status(201).json({ ...newOwner, smsResult });
     } catch (error) {
         console.error('Create Owner Error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -457,7 +536,18 @@ exports.createOwner = async (req, res) => {
 exports.updateOwner = async (req, res) => {
     try {
         const { id } = req.params;
-        const { firstName, lastName, name, email, phone, propertyIds } = req.body;
+        const { firstName, lastName, name, email, phone, propertyIds, companyName, companyId, isPrimary } = req.body;
+
+        // Handle Company Logic
+        let targetCompanyId = companyId ? parseInt(companyId) : null;
+        if (!targetCompanyId && companyName) {
+            const company = await prisma.company.upsert({
+                where: { name: companyName },
+                update: {},
+                create: { name: companyName }
+            });
+            targetCompanyId = company.id;
+        }
 
         const updateData = {
             firstName,
@@ -465,6 +555,8 @@ exports.updateOwner = async (req, res) => {
             name: name || `${firstName} ${lastName}`,
             email,
             phone,
+            companyName,
+            companyId: targetCompanyId,
             properties: {
                 set: propertyIds?.map(pid => ({ id: parseInt(pid) })) || []
             }
@@ -474,6 +566,22 @@ exports.updateOwner = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // Update primary contact
+        if (targetCompanyId && isPrimary) {
+            await prisma.company.update({
+                where: { id: targetCompanyId },
+                data: { primaryContactId: updated.id }
+            });
+        }
+
+        // Sync Properties to Company
+        if (targetCompanyId && propertyIds?.length > 0) {
+            await prisma.property.updateMany({
+                where: { id: { in: propertyIds.map(pid => parseInt(pid)) } },
+                data: { companyId: targetCompanyId }
+            });
+        }
 
         res.json(updated);
     } catch (error) {

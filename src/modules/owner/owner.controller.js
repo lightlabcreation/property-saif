@@ -3,17 +3,24 @@ const prisma = require('../../config/prisma');
 // GET /api/owner/dashboard/stats
 exports.getOwnerDashboardStats = async (req, res) => {
     try {
-        const ownerId = req.user.id; // From Auth Middleware
+        const ownerId = req.user.id;
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
+        const companyId = user.companyId;
 
-        // 1. Properties Owned
-        const propertyCount = await prisma.property.count({ where: { ownerId } });
-
-        // 2. Units in those properties
+        // 1. Get all properties for this owner OR their company
         const properties = await prisma.property.findMany({
-            where: { ownerId },
+            where: {
+                OR: [
+                    { ownerId },
+                    { companyId: companyId || -1 }
+                ]
+            },
             include: { units: true }
         });
         const propertyIds = properties.map(p => p.id);
+        const propertyCount = properties.length;
+
+        // 2. Units in those properties
         const unitCount = await prisma.unit.count({ where: { propertyId: { in: propertyIds } } });
 
         // 3. Occupancy
@@ -36,7 +43,6 @@ exports.getOwnerDashboardStats = async (req, res) => {
         const monthlyRevenue = revenueAgg._sum.rentAmount || 0;
 
         // 5. Outstanding Dues
-        // Sum of all unpaid invoices for these properties
         const duesAgg = await prisma.invoice.aggregate({
             where: {
                 unit: { propertyId: { in: propertyIds } },
@@ -53,7 +59,10 @@ exports.getOwnerDashboardStats = async (req, res) => {
 
         const insuranceExpiryCount = await prisma.insurance.count({
             where: {
-                userId: ownerId,
+                OR: [
+                    { userId: ownerId },
+                    { unit: { propertyId: { in: propertyIds } } }
+                ],
                 endDate: {
                     gte: new Date(),
                     lte: thirtyDaysFromNow
@@ -68,7 +77,7 @@ exports.getOwnerDashboardStats = async (req, res) => {
             monthlyRevenue: parseFloat(monthlyRevenue),
             outstandingDues: parseFloat(outstandingDues),
             insuranceExpiryCount,
-            recentActivity: ["Rent payment received", "Maintenance request resolved"] // Placeholder for now
+            recentActivity: ["Rent payment received", "Maintenance request resolved"]
         });
 
     } catch (error) {
@@ -81,8 +90,14 @@ exports.getOwnerDashboardStats = async (req, res) => {
 exports.getOwnerProperties = async (req, res) => {
     try {
         const ownerId = req.user.id;
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
         const properties = await prisma.property.findMany({
-            where: { ownerId },
+            where: {
+                OR: [
+                    { ownerId },
+                    { companyId: user.companyId || -1 }
+                ]
+            },
             include: { units: true }
         });
 
@@ -110,13 +125,20 @@ exports.getOwnerProperties = async (req, res) => {
 exports.getOwnerFinancials = async (req, res) => {
     try {
         const ownerId = req.user.id;
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
 
-        // Find properties for this owner
-        const properties = await prisma.property.findMany({ where: { ownerId }, include: { units: true } });
+        // Find properties for this owner OR company
+        const properties = await prisma.property.findMany({
+            where: {
+                OR: [
+                    { ownerId },
+                    { companyId: user.companyId || -1 }
+                ]
+            }
+        });
         const propertyIds = properties.map(p => p.id);
 
         // Find paid invoices (Revenue)
-        // Accessing invoices via Unit -> Property
         const invoices = await prisma.invoice.findMany({
             where: {
                 unit: { propertyId: { in: propertyIds } },
@@ -154,12 +176,19 @@ exports.getOwnerFinancials = async (req, res) => {
 exports.getOwnerFinancialPulse = async (req, res) => {
     try {
         const ownerId = req.user.id;
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
 
-        // Get properties for this owner
-        const properties = await prisma.property.findMany({ where: { ownerId }, include: { units: true } });
+        // Get properties for this owner OR company
+        const properties = await prisma.property.findMany({
+            where: {
+                OR: [
+                    { ownerId },
+                    { companyId: user.companyId || -1 }
+                ]
+            }
+        });
         const propertyIds = properties.map(p => p.id);
 
-        // We want the last 6 months of data
         const financialPulse = [];
         const today = new Date();
 
@@ -167,34 +196,9 @@ exports.getOwnerFinancialPulse = async (req, res) => {
             const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
             const monthStr = date.toLocaleString('default', { month: 'short', year: 'numeric' });
 
-            // Expected Revenue (Target) - Sum of rent of all currently occupied units (Approximation)
-            // In a real system, this should come from generated invoices for that month
             const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
             const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
-            // Fetch Invoices for this month
-            const invoices = await prisma.invoice.findMany({
-                where: {
-                    unit: { propertyId: { in: propertyIds } },
-                    month: monthStr // Assuming 'month' field stores "Jan 2026" etc. Or we filter by createdAt
-                    // Better approach if 'month' is not consistent: Filter by createdAt range
-                    // createdAt: { gte: monthStart, lte: monthEnd }
-                }
-            });
-
-            // Calculate Metrics
-            let expected = 0;
-            let collected = 0;
-            let dues = 0;
-
-            // If using 'month' string field in Invoice model as strictly "Month Year":
-            // We need to match the format stored in DB. Let's assume the DB stores "Jan 2026".
-            // If the DB usage of 'month' is inconsistent, we might need to rely on dates.
-            // For this implementation, let's aggregate based on the fetched invoices which we'll try to filter by date first if 'month' is unreliable,
-            // but looking at the schema, 'month' is a String. Let's try to match it.
-            // A safer bet for now without standardized month strings is to assume invoices created in that month belong to that month.
-
-            // Re-fetching with date range for accuracy
             const monthlyInvoices = await prisma.invoice.findMany({
                 where: {
                     unit: { propertyId: { in: propertyIds } },
@@ -204,6 +208,10 @@ exports.getOwnerFinancialPulse = async (req, res) => {
                     }
                 }
             });
+
+            let expected = 0;
+            let collected = 0;
+            let dues = 0;
 
             monthlyInvoices.forEach(inv => {
                 const amount = parseFloat(inv.amount);

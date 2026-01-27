@@ -2,22 +2,46 @@ const prisma = require('../../config/prisma');
 
 exports.getRevenueStats = async (req, res) => {
     try {
+        const { ownerId } = req.query;
+        console.log('Revenue Stats - Received ownerId:', ownerId);
+        const parsedOwnerId = ownerId && ownerId !== 'null' && ownerId !== '' ? parseInt(ownerId) : null;
+
+        let propertyIds = [];
+        if (parsedOwnerId) {
+            const ownerProperties = await prisma.property.findMany({
+                where: { ownerId: parsedOwnerId },
+                select: { id: true }
+            });
+            propertyIds = ownerProperties.map(p => p.id);
+        }
+
+        const unitFilter = parsedOwnerId ? { propertyId: { in: propertyIds } } : {};
+
         // 1. Actual Revenue (Requirement 7): Sum of paidAmount across all invoices
         const invoiceAgg = await prisma.invoice.aggregate({
+            where: {
+                unit: unitFilter
+            },
             _sum: { paidAmount: true }
         });
         const actualRevenue = parseFloat(invoiceAgg._sum.paidAmount) || 0;
 
         // 2. Projected Revenue (Requirement 7): Sum of monthlyRent across all Active leases
         const leaseAgg = await prisma.lease.aggregate({
-            where: { status: 'Active' },
+            where: {
+                status: 'Active',
+                unit: unitFilter
+            },
             _sum: { monthlyRent: true }
         });
         const projectedRevenue = parseFloat(leaseAgg._sum.monthlyRent) || 0;
 
         // 3. Breakdown by Property (Actual Revenue Focused)
         const invoices = await prisma.invoice.findMany({
-            where: { paidAmount: { gt: 0 } },
+            where: {
+                paidAmount: { gt: 0 },
+                unit: unitFilter
+            },
             include: { unit: { include: { property: true } } }
         });
 
@@ -58,7 +82,14 @@ exports.getRevenueStats = async (req, res) => {
 
 exports.getVacancyStats = async (req, res) => {
     try {
+        const { ownerId } = req.query;
+        console.log('Vacancy Stats - Received ownerId:', ownerId);
+        const parsedOwnerId = ownerId && ownerId !== 'null' && ownerId !== '' ? parseInt(ownerId) : null;
+
         const units = await prisma.unit.findMany({
+            where: parsedOwnerId ? {
+                property: { ownerId: parsedOwnerId }
+            } : {},
             include: { property: true }
         });
 

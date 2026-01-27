@@ -36,7 +36,7 @@ exports.getAllUnits = async (req, res) => {
             const unitIdentifier = u.property.civicNumber && u.unitNumber
                 ? `${u.property.civicNumber}-${u.unitNumber}`
                 : u.unitNumber || u.name;
-            
+
             return {
                 id: u.id,
                 unitNumber: u.unitNumber || u.name,
@@ -98,6 +98,18 @@ exports.createUnit = async (req, res) => {
 
         // Determine number of bedrooms
         const numBedrooms = parseInt(bedroomCount) || (normalizedMode === 'BEDROOM_WISE' ? 3 : 1);
+
+        // Validate unit type if provided (Check against DB)
+        if (unitType) {
+            const validType = await prisma.unitType.findUnique({
+                where: { name: unitType }
+            });
+            if (!validType) {
+                return res.status(400).json({
+                    message: `Invalid unit type: ${unitType}. Please use a valid unit type.`
+                });
+            }
+        }
 
         // Create the unit with new fields
         const newUnit = await prisma.unit.create({
@@ -240,6 +252,18 @@ exports.updateUnit = async (req, res) => {
             normalizedMode = 'BEDROOM_WISE';
         } else if (rentalMode === 'FULL_UNIT' || rentalMode === 'Full Unit') {
             normalizedMode = 'FULL_UNIT';
+        }
+
+        // Validate unit type if provided (Check against DB)
+        if (unitType) {
+            const validType = await prisma.unitType.findUnique({
+                where: { name: unitType }
+            });
+            if (!validType) {
+                return res.status(400).json({
+                    message: `Invalid unit type: ${unitType}. Please use a valid unit type.`
+                });
+            }
         }
 
         const numBedrooms = parseInt(bedrooms) || existingUnit.bedrooms;
@@ -425,12 +449,73 @@ exports.deleteUnit = async (req, res) => {
             await tx.unit.delete({
                 where: { id: unitId }
             });
+
+            return { message: 'Unit deleted successfully' };
         });
 
-        res.json({ message: 'Unit deleted successfully' });
+        res.json(result);
     } catch (error) {
-        console.error('Delete Unit Error:', error);
-        res.status(500).json({ message: 'Error deleting unit' });
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
     }
 };
 
+// GET /api/admin/unit-types
+// GET /api/admin/unit-types
+exports.getUnitTypes = async (req, res) => {
+    try {
+        // Fetch from DB
+        const unitTypes = await prisma.unitType.findMany({
+            orderBy: { name: 'asc' }
+        });
+
+        res.json({
+            unitTypes: unitTypes.map(t => ({ id: t.id, name: t.name, isActive: t.isActive }))
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// POST /api/admin/unit-types
+exports.createUnitType = async (req, res) => {
+    try {
+        const { name } = req.body;
+
+        if (!name) return res.status(400).json({ message: 'Name is required' });
+
+        const existing = await prisma.unitType.findUnique({
+            where: { name }
+        });
+
+        if (existing) {
+            return res.status(400).json({ message: 'Unit Type already exists' });
+        }
+
+        const newType = await prisma.unitType.create({
+            data: { name, isActive: true }
+        });
+
+        res.status(201).json(newType);
+    } catch (error) {
+        console.error('Create Unit Type Error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// DELETE /api/admin/unit-types/:id
+exports.deleteUnitType = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        await prisma.unitType.delete({
+            where: { id: parseInt(id) }
+        });
+
+        res.json({ message: 'Unit Type deleted' });
+    } catch (error) {
+        console.error('Delete Unit Type Error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+};

@@ -30,7 +30,8 @@ const generateInvoicePDF = (invoice, res, settings = {}) => {
     doc.fontSize(20).font('Helvetica-Bold').text(companyName, 100, 50);
     doc.fontSize(10).font('Helvetica').text(companyAddress, 100, 80);
 
-    doc.fontSize(20).text('RENT INVOICE', 50, 140, { align: 'right' });
+    const isService = invoice.category === 'SERVICE';
+    doc.fontSize(20).text(isService ? 'SERVICE FEE INVOICE' : 'RENT INVOICE', 50, 140, { align: 'right' });
     doc.moveDown();
 
     // Invoice Info
@@ -41,8 +42,8 @@ const generateInvoicePDF = (invoice, res, settings = {}) => {
 
     // Tenant Info
     doc.fontSize(14).text('Billed To:', { underline: true });
-    doc.fontSize(12).text(`Tenant: ${invoice.tenant.name}`);
-    doc.text(`Unit: ${invoice.unit.name}`);
+    doc.fontSize(12).text(`Tenant: ${invoice.tenant?.name || 'N/A'}`);
+    doc.text(`Unit: ${invoice.unit?.name || 'N/A'}`);
     doc.moveDown();
 
     // Table Header
@@ -54,14 +55,21 @@ const generateInvoicePDF = (invoice, res, settings = {}) => {
 
     // Table Content
     let currentY = tableTop + 30;
-    doc.text('Monthly Rent Payment', 50, currentY);
-    doc.text(`$${parseFloat(invoice.rent).toFixed(2)}`, 400, currentY, { align: 'right' });
 
-    currentY += 20;
-    if (parseFloat(invoice.serviceFees) > 0) {
-        doc.text('Common Area Service Fees', 50, currentY);
-        doc.text(`$${parseFloat(invoice.serviceFees).toFixed(2)}`, 400, currentY, { align: 'right' });
+    if (isService) {
+        doc.text(invoice.description || 'Service Fee Payment', 50, currentY);
+        doc.text(`$${parseFloat(invoice.serviceFees || 0).toFixed(2)}`, 400, currentY, { align: 'right' });
         currentY += 20;
+    } else {
+        doc.text('Monthly Rent Payment', 50, currentY);
+        doc.text(`$${parseFloat(invoice.rent || 0).toFixed(2)}`, 400, currentY, { align: 'right' });
+        currentY += 20;
+
+        if (parseFloat(invoice.serviceFees || 0) > 0) {
+            doc.text('Common Area Service Fees', 50, currentY);
+            doc.text(`$${parseFloat(invoice.serviceFees || 0).toFixed(2)}`, 400, currentY, { align: 'right' });
+            currentY += 20;
+        }
     }
 
     doc.moveTo(50, currentY).lineTo(550, currentY).stroke();

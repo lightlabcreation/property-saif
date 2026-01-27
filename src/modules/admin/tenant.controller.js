@@ -42,9 +42,22 @@ exports.getAllTenants = async (req, res) => {
             // Find active lease first, then fall back to DRAFT
             const activeLease = t.leases.find(l => l.status === 'Active') || t.leases.find(l => l.status === 'DRAFT');
 
+            // Display logic: For COMPANY type, show "Company Name (Contact Name)"
+            let displayName = t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim();
+
+            if (t.type === 'COMPANY' && t.companyName) {
+                // If contact name exists, show "Company Name (Contact Name)"
+                if (displayName) {
+                    displayName = `${t.companyName} (${displayName})`;
+                } else {
+                    // If no contact name, just show company name
+                    displayName = t.companyName;
+                }
+            }
+
             return {
                 id: t.id,
-                name: t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim(),
+                name: displayName,
                 firstName: t.firstName,
                 lastName: t.lastName,
                 type: t.type || 'Individual',

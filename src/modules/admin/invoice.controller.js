@@ -17,7 +17,12 @@ exports.downloadInvoicePDF = async (req, res) => {
         // Fetch Branding Settings
         const settingsList = await prisma.systemSetting.findMany();
         const settings = {};
-        settingsList.forEach(s => settings[s.key] = s.value);
+        settingsList.forEach(s => {
+            // Map internal keys to PDF-expected keys
+            if (s.key === 'companyName') settings['company_name'] = s.value;
+            else if (s.key === 'companyAddress') settings['company_address'] = s.value;
+            else settings[s.key] = s.value;
+        });
 
         generateInvoicePDF(invoice, res, settings);
     } catch (e) {
@@ -76,6 +81,8 @@ exports.getInvoices = async (req, res) => {
                 serviceFees: parseFloat(inv.serviceFees),
                 amount: currentAmount,
                 status: inv.status,
+                category: inv.category,
+                description: inv.description,
                 leaseStartDate: activeLease?.startDate || null,
                 leaseEndDate: activeLease?.endDate || null
             };
@@ -151,7 +158,9 @@ exports.createInvoice = async (req, res) => {
                 amount: totalAmount,
                 paidAmount: 0,
                 balanceDue: totalAmount,
-                status: 'draft'
+                status: 'draft',
+                category: req.body.category || 'RENT',
+                description: req.body.description || null
             },
             include: {
                 tenant: true,
@@ -178,6 +187,8 @@ exports.updateInvoice = async (req, res) => {
 
         const data = {};
         if (month) data.month = month;
+        if (req.body.description !== undefined) data.description = req.body.description;
+        if (req.body.category) data.category = req.body.category;
 
         let newRent = rent !== undefined ? parseFloat(rent) : Number(existing.rent);
         let newFees = serviceFees !== undefined ? parseFloat(serviceFees) : Number(existing.serviceFees);

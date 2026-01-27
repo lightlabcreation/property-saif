@@ -388,7 +388,7 @@ exports.getActiveLease = async (req, res) => {
 // POST /api/admin/leases
 exports.createLease = async (req, res) => {
     try {
-        const { unitId, bedroomId, tenantId, startDate, endDate, monthlyRent, securityDeposit } = req.body;
+        const { unitId, bedroomId, tenantId, startDate, endDate, monthlyRent, securityDeposit, coTenantIds } = req.body;
 
         if (!unitId || !tenantId) {
             return res.status(400).json({ message: 'Unit ID and Tenant ID are required' });
@@ -610,19 +610,24 @@ exports.createLease = async (req, res) => {
                 });
             }
 
-            // Record Security Deposit as a Liability Transaction
-            if (parseFloat(securityDeposit) > 0) {
-                const lastTx = await tx.transaction.findFirst({ orderBy: { id: 'desc' } });
-                const prevBalance = lastTx ? parseFloat(lastTx.balance) : 0;
+            // 4. Link Co-Tenants (Residents)
+            if (coTenantIds && Array.isArray(coTenantIds) && coTenantIds.length > 0) {
+                // Verify no co-tenant is the primary tenant
+                if (coTenantIds.includes(tId)) {
+                    throw new Error('Primary tenant cannot be a co-tenant.');
+                }
 
-                await tx.transaction.create({
+                // Update co-tenants to link to this lease
+                // We typically assume co-tenants are "Residents" or "Occupants" for this lease
+                // NOTE: This logic assumes co-tenants are existing Users.
+                await tx.user.updateMany({
+                    where: { id: { in: coTenantIds.map(id => parseInt(id)) } },
                     data: {
-                        date: new Date(),
-                        description: `Security Deposit Received - Lease ${lease.id}${isBedroomLease ? ' (Bedroom)' : ' (Full Unit)'}`,
-                        type: 'Liability',
-                        amount: parseFloat(securityDeposit),
-                        balance: prevBalance + parseFloat(securityDeposit),
-                        status: 'Completed'
+                        leaseId: lease.id,
+                        // Optionally update their address to match the unit
+                        unitId: uId,
+                        buildingId: unit.propertyId,
+                        ...(bId ? { bedroomId: bId } : {})
                     }
                 });
             }
