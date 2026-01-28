@@ -510,7 +510,7 @@ exports.createOwner = async (req, res) => {
         // SMS Logic
         let smsResult = { success: true, skipped: true };
         if (phone && email) {
-            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-mastekocomplete.netlify.app'}/login`;
             console.log('Attempting to send SMS to:', phone);
             smsResult = await smsService.sendSMS(phone, message);
         }
@@ -518,7 +518,7 @@ exports.createOwner = async (req, res) => {
         // Email Logic
         if (email) {
             const emailSubject = 'Welcome to Property Management - Your Login Credentials';
-            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-mastekocomplete.netlify.app'}/login`;
 
             // Non-blocking fire and forget
             emailService.sendEmail(email, emailSubject, emailText)

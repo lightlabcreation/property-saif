@@ -258,7 +258,7 @@ exports.createTenant = async (req, res) => {
         // 6. SMS Logic (Skip for RESIDENT)
         let smsResult = { success: true, skipped: true };
         if (normalizedType !== 'RESIDENT' && password && phone && email) {
-            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-mastekocomplete.netlify.app'}/login`;
             console.log('Attempting to send SMS to:', phone);
             smsResult = await smsService.sendSMS(phone, message);
         }
@@ -266,7 +266,7 @@ exports.createTenant = async (req, res) => {
         // 7. Email Logic (Skip for RESIDENT) - Isolated and Non-blocking
         if (normalizedType !== 'RESIDENT' && password && email) {
             const emailSubject = 'Welcome to Property Management - Your Login Credentials';
-            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-mastekocomplete.netlify.app'}/login`;
 
             // Non-blocking fire and forget, error handled within service
             emailService.sendEmail(email, emailSubject, emailText)
@@ -554,7 +554,7 @@ exports.sendInvite = async (req, res) => {
         res.json({
             message: 'Invite generated successfully',
             inviteToken: user.inviteToken,
-            inviteLink: `${process.env.FRONTEND_URL || `https://property-n.kiaantechnology.com` || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
+            inviteLink: `${process.env.FRONTEND_URL || `https://property-mastekocomplete.netlify.app` || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
         });
     } catch (error) {
         console.error('Send Invite Error:', error);
