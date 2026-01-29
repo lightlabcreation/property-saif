@@ -389,21 +389,158 @@ exports.updateProperty = async (req, res) => {
 exports.deleteProperty = async (req, res) => {
     try {
         const { id } = req.params;
+        const propertyId = parseInt(id);
 
-        // Need to delete related units first (Prisma doesn't auto-cascade unless configured in schema)
-        // Also other relations... for now trying deletion of units then property.
-        await prisma.unit.deleteMany({
-            where: { propertyId: parseInt(id) }
+        console.log(`[deleteProperty] Initiating deletion for Property ID: ${propertyId}`);
+
+        // 1. Gather all related IDs to scope the deletion
+        // We need Units to find Leases, Bedrooms, Invoices, etc.
+        const units = await prisma.unit.findMany({
+            where: { propertyId: propertyId },
+            select: { id: true }
+        });
+        const unitIds = units.map(u => u.id);
+
+        const bedrooms = await prisma.bedroom.findMany({
+            where: { unitId: { in: unitIds } },
+            select: { id: true }
+        });
+        const bedroomIds = bedrooms.map(b => b.id);
+
+        const leases = await prisma.lease.findMany({
+            where: { unitId: { in: unitIds } },
+            select: { id: true }
+        });
+        const leaseIds = leases.map(l => l.id);
+
+        const invoices = await prisma.invoice.findMany({
+            where: {
+                OR: [
+                    { unitId: { in: unitIds } },
+                    { leaseId: { in: leaseIds } }
+                ]
+            },
+            select: { id: true }
+        });
+        const invoiceIds = invoices.map(i => i.id);
+
+        const payments = await prisma.payment.findMany({
+            where: { invoiceId: { in: invoiceIds } },
+            select: { id: true }
+        });
+        const paymentIds = payments.map(p => p.id);
+
+        console.log(`[deleteProperty] Found related entities: ${unitIds.length} Units, ${leaseIds.length} Leases, ${invoiceIds.length} Invoices`);
+
+        // 2. Execute Deletions in strict order to avoid FK constraints
+        await prisma.$transaction(async (tx) => {
+            // A. Transactions (Dependent on Invoices/Payments)
+            await tx.transaction.deleteMany({
+                where: {
+                    OR: [
+                        { invoiceId: { in: invoiceIds } },
+                        { paymentId: { in: paymentIds } }
+                    ]
+                }
+            });
+
+            // B. Payments (Dependent on Invoices)
+            await tx.payment.deleteMany({
+                where: { id: { in: paymentIds } }
+            });
+
+            // C. Insurance (Dependent on Unit/Lease) - Must delete before Documents if docs rely on it, 
+            //    BUT Insurance refers to Document. So delete Insurance first to free up Document?
+            //    Answer: Insurance -> Document (via uploadedDocumentId). Delete Insurance first.
+            await tx.insurance.deleteMany({
+                where: {
+                    OR: [
+                        { unitId: { in: unitIds } },
+                        { leaseId: { in: leaseIds } }
+                    ]
+                }
+            });
+
+            // D. Documents (Dependent on Property/Unit/Lease/Invoice)
+            await tx.document.deleteMany({
+                where: {
+                    OR: [
+                        { propertyId: propertyId },
+                        { unitId: { in: unitIds } },
+                        { leaseId: { in: leaseIds } },
+                        { invoiceId: { in: invoiceIds } }
+                    ]
+                }
+            });
+
+            // E. RefundAdjustments (Dependent on Unit)
+            await tx.refundAdjustment.deleteMany({
+                where: { unitId: { in: unitIds } }
+            });
+
+            // F. Tickets (Dependent on Property/Unit)
+            await tx.ticket.deleteMany({
+                where: {
+                    OR: [
+                        { propertyId: propertyId },
+                        { unitId: { in: unitIds } }
+                    ]
+                }
+            });
+
+            // G. Invoices (Dependent on Unit/Lease)
+            await tx.invoice.deleteMany({
+                where: { id: { in: invoiceIds } }
+            });
+
+            // H. Unlink Users (Tenants/Residents) from Units/Leases/Bedrooms
+            //    We do NOT delete the User, just clear the reference.
+            await tx.user.updateMany({
+                where: { leaseId: { in: leaseIds } },
+                data: { leaseId: null }
+            });
+            await tx.user.updateMany({
+                where: { unitId: { in: unitIds } },
+                data: { unitId: null }
+            });
+            await tx.user.updateMany({
+                where: { bedroomId: { in: bedroomIds } },
+                data: { bedroomId: null }
+            });
+
+            // I. Leases (Dependent on Unit/Bedroom)
+            await tx.lease.deleteMany({
+                where: { id: { in: leaseIds } }
+            });
+
+            // J. Bedrooms (Dependent on Unit)
+            await tx.bedroom.deleteMany({
+                where: { id: { in: bedroomIds } }
+            });
+
+            // K. Maintenance Tasks (Dependent on Property)
+            await tx.maintenanceTask.deleteMany({
+                where: { propertyId: propertyId }
+            });
+
+            // L. Units (Dependent on Property)
+            await tx.unit.deleteMany({
+                where: { id: { in: unitIds } }
+            });
+
+            // M. Property
+            await tx.property.delete({
+                where: { id: propertyId }
+            });
         });
 
-        await prisma.property.delete({
-            where: { id: parseInt(id) }
-        });
+        console.log(`[deleteProperty] Successfully deleted property ${propertyId} and all interactions.`);
+        res.json({ message: 'Property and all related data deleted successfully' });
 
-        res.json({ message: 'Property deleted successfully' });
     } catch (error) {
         console.error('Delete Property Error:', error);
-        res.status(500).json({ message: 'Server error' });
+        // Specialized error handling if needed, otherwise generic 500
+        res.status(500).json({ message: 'Server error during property deletion', error: error.message });
     }
 };
 
