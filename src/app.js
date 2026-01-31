@@ -60,9 +60,15 @@ app.use('/api', routes);
 app.use('/uploads', express.static('uploads'));
 
 // Error Handling
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ status: 'error', message: 'Something went wrong!' });
+const globalErrorHandler = require('./middlewares/globalError.middleware');
+const AppError = require('./utils/AppError');
+
+// Error Handling
+// Handle undefined routes
+app.use((req, res, next) => {
+  next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
+
+app.use(globalErrorHandler);
 
 module.exports = app;

@@ -19,10 +19,12 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-        // Check Role (if admin portal, enforce Admin)
-        // Actually, user might be Owner/Tenant logging in via same endpoint?
-        // The requirement says "Admin authentication (JWT)". 
-        // We will allow all but frontend will redirect based on role.
+        // Tenant/Owner may have no password set until they use the invite link
+        if (!user.password || user.password.trim() === '') {
+            return res.status(401).json({
+                message: 'No password set for this account. Please use your invite link to set a password first.'
+            });
+        }
 
         // Validate password
         const isMatch = await bcrypt.compare(password, user.password);

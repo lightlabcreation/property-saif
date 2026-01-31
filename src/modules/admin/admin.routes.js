@@ -83,6 +83,8 @@ router.get('/accounting/transactions', accountingController.getTransactions);
 router.post('/accounting/transactions', accountingController.createTransaction);
 
 router.get('/communication/emails', communicationController.getEmailLogs);
+router.delete('/communication/emails/:id', communicationController.deleteEmailLog);
+router.post('/communication/send-email', communicationController.sendComposeEmail);
 router.get('/communication', communicationController.getHistory);
 router.post('/communication', communicationController.sendMessage);
 

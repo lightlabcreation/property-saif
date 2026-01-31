@@ -2,29 +2,138 @@ const prisma = require('../../config/prisma');
 const smsService = require('../../services/sms.service');
 const EmailService = require('../../services/email.service');
 
-// GET /api/admin/communication/emails
+// GET /api/admin/communication/emails (paginated, latest first)
 exports.getEmailLogs = async (req, res) => {
     try {
-        const history = await prisma.communicationLog.findMany({
-            where: { channel: 'Email' },
-            include: { recipientUser: true },
-            orderBy: { timestamp: 'desc' }
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+        const skip = (page - 1) * limit;
+
+        const [history, total] = await Promise.all([
+            prisma.communicationLog.findMany({
+                where: { channel: 'Email' },
+                include: { recipientUser: true },
+                orderBy: { timestamp: 'desc' },
+                skip,
+                take: limit
+            }),
+            prisma.communicationLog.count({ where: { channel: 'Email' } })
+        ]);
+
+        const formatted = history.map(item => {
+            const subjectPart = item.content?.split('|')[0];
+            const bodyPart = item.content?.split('|')[1];
+            const subject = subjectPart?.replace(/^Subject:\s*/i, '').trim() || (bodyPart ? 'No Subject' : 'No Subject');
+            const message = bodyPart?.replace(/^Message:\s*/i, '').trim() || bodyPart?.replace(/^Body:\s*/i, '').trim() || item.content;
+            const source = (item.eventType === 'MANUAL_EMAIL' || item.eventType === 'MANUAL_MESSAGE') ? 'Manual' : 'System';
+            return {
+                id: item.id,
+                date: item.timestamp.toISOString().replace('T', ' ').substring(0, 16),
+                recipient: item.recipientUser?.name || item.recipient,
+                recipientEmail: item.recipientUser?.email || item.recipient,
+                subject,
+                message,
+                status: item.status,
+                source
+            };
         });
 
-        const formatted = history.map(item => ({
-            id: item.id,
-            date: item.timestamp.toISOString().replace('T', ' ').substring(0, 16),
-            recipient: item.recipientUser?.name || item.recipient,
-            recipientEmail: item.recipientUser?.email || item.recipient,
-            subject: item.content?.split('|')[0]?.replace('Subject:', '').trim() || 'No Subject',
-            message: item.content?.split('|')[1]?.replace('Message:', '').trim() || item.content,
-            status: item.status
-        }));
-
-        res.json(formatted);
+        res.json({
+            data: formatted,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit)
+        });
     } catch (e) {
         console.error(e);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// DELETE /api/admin/communication/emails/:id
+exports.deleteEmailLog = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) {
+            return res.status(400).json({ message: 'Invalid log ID' });
+        }
+        const deleted = await prisma.communicationLog.deleteMany({
+            where: { id, channel: 'Email' }
+        });
+        if (deleted.count === 0) {
+            return res.status(404).json({ message: 'Email log not found' });
+        }
+        res.json({ success: true, message: 'Log deleted' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Failed to delete log' });
+    }
+};
+
+// POST /api/admin/communication/send-email (manual compose & send – uses existing SendGrid, logs to same Email Logs)
+exports.sendComposeEmail = async (req, res) => {
+    try {
+        const { recipients, subject, body } = req.body;
+
+        const errors = [];
+        if (!recipients || (Array.isArray(recipients) && recipients.length === 0)) {
+            errors.push('At least one recipient is required.');
+        }
+        if (!subject || typeof subject !== 'string' || !subject.trim()) {
+            errors.push('Subject is required.');
+        }
+        if (body == null || typeof body !== 'string' || !body.trim()) {
+            errors.push('Message body is required.');
+        }
+
+        const emailList = Array.isArray(recipients)
+            ? recipients.map(r => (typeof r === 'string' ? r.trim() : '')).filter(Boolean)
+            : (typeof recipients === 'string' ? recipients.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean) : []);
+
+        if (emailList.length === 0 && errors.length === 0) {
+            errors.push('At least one valid recipient email is required.');
+        }
+
+        if (errors.length > 0) {
+            return res.status(400).json({ success: false, message: errors.join(' '), errors });
+        }
+
+        const results = [];
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const to of emailList) {
+            const emailResult = await EmailService.sendEmail(to.trim(), subject.trim(), body.trim(), { eventType: 'MANUAL_EMAIL' });
+            if (emailResult.success) {
+                successCount++;
+                results.push({ to, success: true });
+            } else {
+                failCount++;
+                results.push({ to, success: false, error: emailResult.error || 'Send failed' });
+            }
+        }
+
+        if (failCount === emailList.length) {
+            return res.status(502).json({
+                success: false,
+                message: 'No emails could be sent. Please check your configuration and try again.',
+                results
+            });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: successCount === emailList.length
+                ? `Email sent successfully to ${successCount} recipient(s).`
+                : `Sent to ${successCount} recipient(s). ${failCount} failed.`,
+            sent: successCount,
+            failed: failCount,
+            results
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ success: false, message: 'Failed to send email.' });
     }
 };
 

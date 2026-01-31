@@ -239,39 +239,56 @@ exports.getOwnerFinancialPulse = async (req, res) => {
     }
 };
 
-// GET /api/owner/reports
+// GET /api/owner/reports – dynamic reports list and stats for owner's portfolio
 exports.getOwnerReports = async (req, res) => {
-    // Return definition of available reports with dynamic dates
-    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    const lastMonth = new Date();
-    lastMonth.setMonth(lastMonth.getMonth() - 1);
-    const lastMonthStr = lastMonth.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    try {
+        const ownerId = req.user.id;
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
+        const propertyIds = (await prisma.property.findMany({
+            where: {
+                OR: [
+                    { ownerId },
+                    { companyId: user?.companyId ?? -1 }
+                ]
+            },
+            select: { id: true }
+        })).map(p => p.id);
 
-    const reports = [
-        {
-            title: 'Monthly Performance Summary',
-            description: 'Comprehensive view of revenue, occupancy, and expenses for the current month.',
-            type: 'monthly_summary',
-            lastGenerated: today
-        },
-        {
-            title: 'Annual Financial Overview',
-            description: 'Year-on-year growth, cumulative earnings, and portfolio valuation trends.',
-            type: 'annual_overview',
-            lastGenerated: today
-        },
-        {
-            title: 'Occupancy & Vacancy Analysis',
-            description: 'Unit-by-unit occupancy status and historical vacancy rates across all sites.',
-            type: 'occupancy_stats',
-            lastGenerated: today
-        },
-        {
-            title: 'Tax Compliance Statement',
-            description: 'Read-only tax summaries and deductible expense records for audit purposes.',
-            type: 'tax_statement',
-            lastGenerated: lastMonthStr
-        },
-    ];
-    res.json(reports);
+        const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const lastMonth = new Date();
+        lastMonth.setMonth(lastMonth.getMonth() - 1);
+        const lastMonthStr = lastMonth.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+        let reportsViewable = 4;
+        if (propertyIds.length > 0) {
+            const twelveMonthsAgo = new Date();
+            twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+            const invoiceCount = await prisma.invoice.count({
+                where: { unit: { propertyId: { in: propertyIds } }, createdAt: { gte: twelveMonthsAgo } }
+            });
+            reportsViewable = Math.min(99, Math.max(4, Math.ceil(invoiceCount / 3) || 4));
+        }
+
+        const reports = [
+            { id: 'monthly_summary', title: 'Monthly Performance Summary', description: 'Comprehensive view of revenue, occupancy, and expenses for the current month.', type: 'monthly_summary', lastGenerated: today },
+            { id: 'annual_overview', title: 'Annual Financial Overview', description: 'Year-on-year growth, cumulative earnings, and portfolio valuation trends.', type: 'annual_overview', lastGenerated: today },
+            { id: 'occupancy_stats', title: 'Occupancy & Vacancy Analysis', description: 'Unit-by-unit occupancy status and historical vacancy rates across all sites.', type: 'occupancy_stats', lastGenerated: today },
+            { id: 'tax_statement', title: 'Tax Compliance Statement', description: 'Read-only tax summaries and deductible expense records for audit purposes.', type: 'tax_statement', lastGenerated: lastMonthStr },
+        ];
+
+        res.json({
+            reports,
+            stats: {
+                reportsViewable: `${reportsViewable} Total`,
+                reportsViewableSub: 'Last 12 months',
+                exportLimit: 'Unlimited',
+                exportLimitSub: 'PDF / CSV Formats',
+                dataLatency: 'Real-time',
+                dataLatencySub: 'Synced with Admin'
+            }
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Server error' });
+    }
 };

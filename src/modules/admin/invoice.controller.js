@@ -118,8 +118,13 @@ exports.createInvoice = async (req, res) => {
             return res.status(400).json({ message: 'Invoices can only be generated for ACTIVE leases.' });
         }
 
+        // Determine who to bill: If tenant is a RESIDENT, bill their Parent
+        let billableTenantId = parseInt(tenantId);
         if (activeLease.tenant.type === 'RESIDENT') {
-            return res.status(400).json({ message: 'Invoices cannot be generated for Residents.' });
+            if (!activeLease.tenant.parentId) {
+                return res.status(400).json({ message: 'Resident has no billable parent assigned.' });
+            }
+            billableTenantId = activeLease.tenant.parentId;
         }
 
         // Note: RESIDENT is not a tenant type - only INDIVIDUAL and COMPANY are valid tenant types
@@ -148,7 +153,7 @@ exports.createInvoice = async (req, res) => {
         const newInvoice = await prisma.invoice.create({
             data: {
                 invoiceNo,
-                tenantId: parseInt(tenantId),
+                tenantId: billableTenantId,
                 unitId: parseInt(unitId),
                 leaseId: activeLease.id,
                 leaseType: activeLease.unit.rentalMode,
@@ -270,7 +275,7 @@ exports.runBatchInvoicing = async (req, res) => {
                 // Only include leases for actual tenants (INDIVIDUAL or COMPANY)
                 // Residents are separate entities and cannot have direct leases
                 tenant: {
-                    type: { in: ['INDIVIDUAL', 'COMPANY'] }
+                    type: { in: ['INDIVIDUAL', 'COMPANY', 'RESIDENT'] }
                 }
             },
             include: { unit: true, tenant: true }
@@ -316,10 +321,26 @@ exports.runBatchInvoicing = async (req, res) => {
                 const invoiceNo = `INV-BATCH-${String(count + 1).padStart(5, '0')}`;
                 const dueDate = new Date(today.getFullYear(), today.getMonth(), 10); // 10th of month
 
+                // Determine who to bill: If tenant is a RESIDENT, bill their Parent
+                const billableTenantId = lease.tenant.type === 'RESIDENT' ? lease.tenant.parentId : lease.tenantId;
+
+                if (!billableTenantId) {
+                    await prisma.rentRunLog.create({
+                        data: {
+                            runId: rentRun.id,
+                            leaseId: lease.id,
+                            status: 'Skipped',
+                            message: 'No billable tenant (parent) found for this resident.'
+                        }
+                    });
+                    skippedCount++;
+                    continue;
+                }
+
                 await prisma.invoice.create({
                     data: {
                         invoiceNo,
-                        tenantId: lease.tenantId,
+                        tenantId: billableTenantId,
                         unitId: lease.unitId,
                         leaseId: lease.id,
                         leaseType: lease.unit.rentalMode,

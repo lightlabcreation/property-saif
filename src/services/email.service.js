@@ -11,9 +11,11 @@ class EmailService {
      * @param {string} to - Recipient email address
      * @param {string} subject - Email subject
      * @param {string} text - Email body (plain text)
+     * @param {object} [options] - Optional. { eventType } for log entry (default: TENANT_CREATION_CREDENTIALS)
      * @returns {Promise<object>} - SendGrid response or error
      */
-    static async sendEmail(to, subject, text) {
+    static async sendEmail(to, subject, text, options = {}) {
+        const eventType = options.eventType || 'TENANT_CREATION_CREDENTIALS';
         if (!process.env.SENDGRID_API_KEY) {
             console.error('[EmailService] SENDGRID_API_KEY is not defined in .env');
             return { success: false, error: 'API Key missing' };
@@ -61,7 +63,7 @@ class EmailService {
                 await prisma.communicationLog.create({
                     data: {
                         channel: 'Email',
-                        eventType: 'TENANT_CREATION_CREDENTIALS',
+                        eventType,
                         recipient: to,
                         content: `Subject: ${subject} | Body: ${text}`,
                         status: 'Sent'
@@ -80,7 +82,7 @@ class EmailService {
                 await prisma.communicationLog.create({
                     data: {
                         channel: 'Email',
-                        eventType: 'TENANT_CREATION_CREDENTIALS',
+                        eventType,
                         recipient: to,
                         content: `Subject: ${subject} | Body: ${text}`,
                         status: 'Failed',
