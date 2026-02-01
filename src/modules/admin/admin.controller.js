@@ -729,21 +729,48 @@ exports.updateOwner = async (req, res) => {
 
 exports.deleteOwner = async (req, res) => {
     try {
-        const { id } = req.params;
+        const id = parseInt(req.params.id);
 
-        // Disconnect properties first
-        await prisma.property.updateMany({
-            where: { ownerId: parseInt(id) },
-            data: { ownerId: null }
+        await prisma.$transaction(async (tx) => {
+            // 1. Disconnect properties
+            await tx.property.updateMany({
+                where: { ownerId: id },
+                data: { ownerId: null }
+            });
+
+            // 2. Unlink from company (if primary contact)
+            await tx.company.updateMany({
+                where: { primaryContactId: id },
+                data: { primaryContactId: null }
+            });
+
+            // 3. Cleanup User-related dependencies
+            await tx.refreshToken.deleteMany({ where: { userId: id } });
+            await tx.communicationLog.deleteMany({ where: { recipientId: id } });
+            await tx.quickBooksConfig.deleteMany({ where: { userId: id } });
+            await tx.message.deleteMany({
+                where: {
+                    OR: [
+                        { senderId: id },
+                        { receiverId: id }
+                    ]
+                }
+            });
+
+            // 4. Documents and Insurance (Ownership)
+            // Note: Since Insurance refers to Document, delete Insurance first
+            await tx.insurance.deleteMany({ where: { userId: id } });
+            await tx.document.deleteMany({ where: { userId: id } });
+
+            // 5. Finally delete the user
+            await tx.user.delete({
+                where: { id: id }
+            });
         });
 
-        await prisma.user.delete({
-            where: { id: parseInt(id) }
-        });
-
-        res.json({ message: 'Owner deleted' });
+        res.json({ message: 'Owner deleted successfully' });
     } catch (error) {
         console.error('Delete Owner Error:', error);
-        res.status(500).json({ message: 'Server error' });
+        res.status(500).json({ message: 'Error deleting owner', error: error.message });
     }
 };

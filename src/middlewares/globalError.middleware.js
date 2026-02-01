@@ -68,6 +68,10 @@ module.exports = (err, req, res, next) => {
     error.code = err.code;
     if (error.code === 'P2002') error = handleDuplicateFieldsDB(error);
     if (error.code === 'P2003' || error.code === 'P2025') error = handleValidationErrorDB(error);
+    // Prisma "Unknown arg" (invalid field name) -> 400 with clear message
+    if (err.message && typeof err.message === 'string' && err.message.includes('Unknown arg')) {
+        error = new AppError('Invalid data field sent. Please refresh and try again.', 400);
+    }
 
     // Unknown/programming errors: hide technical details from client
     if (!error.isOperational && error.statusCode === 500) {
@@ -80,7 +84,7 @@ module.exports = (err, req, res, next) => {
         message: error.message,
         errors: error.errors || {}
     };
-    if (process.env.NODE_ENV === 'development' && err.stack) {
+    if (err.stack) {
         payload.stack = err.stack;
     }
     res.status(error.statusCode).json(payload);

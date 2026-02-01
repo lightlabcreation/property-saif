@@ -62,7 +62,10 @@ exports.getAllTickets = async (req, res) => {
                     leaseStatus: activeLease ? activeLease.status : 'No Active Lease',
                     email: t.user.email,
                     phone: t.user.phone,
-                }
+                },
+                propertyId: t.propertyId,
+                unitId: t.unitId,
+                tenantId: t.userId
             };
         });
 
@@ -143,6 +146,47 @@ exports.createTicket = async (req, res) => {
     } catch (e) {
         console.error(e);
         res.status(500).json({ message: 'Error creating ticket' });
+    }
+};
+
+// PUT /api/admin/tickets/:id
+exports.updateTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { subject, description, priority, category, status, propertyId, unitId, tenantId } = req.body;
+
+        const updated = await prisma.ticket.update({
+            where: { id: parseInt(id) },
+            data: {
+                subject,
+                description,
+                priority,
+                category,
+                status,
+                propertyId: propertyId ? parseInt(propertyId) : undefined,
+                unitId: unitId ? parseInt(unitId) : undefined,
+                userId: tenantId ? parseInt(tenantId) : undefined
+            }
+        });
+
+        res.json(updated);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error updating ticket' });
+    }
+};
+
+// DELETE /api/admin/tickets/:id
+exports.deleteTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.ticket.delete({
+            where: { id: parseInt(id) }
+        });
+        res.json({ message: 'Ticket deleted' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error deleting ticket' });
     }
 };
 

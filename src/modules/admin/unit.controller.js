@@ -135,13 +135,23 @@ exports.createUnit = async (req, res) => {
             const uNum = newUnit.unitNumber || newUnit.name;
 
             // Normalize all bedrooms to {BuildingCivicNumber}-{UnitNumber}-{BedroomSequence}
-            bedroomsToCreate = Array.from({ length: numBedrooms }).map((_, i) => ({
-                bedroomNumber: `${civic}-${uNum}-${i + 1}`,
-                roomNumber: i + 1,
-                unitId: newUnit.id,
-                status: 'Vacant',
-                rentAmount: 0
-            }));
+            // BUT if bedroomIdentifiers are provided (custom names), use them
+            bedroomsToCreate = Array.from({ length: numBedrooms }).map((_, i) => {
+                let identifier = `${civic}-${uNum}-${i + 1}`;
+
+                // Use custom identifier if provided
+                if (Array.isArray(bedroomIdentifiers) && bedroomIdentifiers[i]) {
+                    identifier = bedroomIdentifiers[i];
+                }
+
+                return {
+                    bedroomNumber: identifier,
+                    roomNumber: i + 1,
+                    unitId: newUnit.id,
+                    status: 'Vacant',
+                    rentAmount: 0
+                };
+            });
 
             await prisma.bedroom.createMany({
                 data: bedroomsToCreate
@@ -205,7 +215,7 @@ exports.getUnitDetails = async (req, res) => {
             rentalMode: unit.rentalMode, // Added rentalMode to response
             bedroomsList: unit.bedroomsList.map(b => ({
                 id: b.id,
-                bedroomNumber: `${unit.property.civicNumber || ''}-${unit.unitNumber || unit.name}-${b.roomNumber}`,
+                bedroomNumber: b.bedroomNumber,
                 originalBedroomNumber: b.bedroomNumber,
                 roomNumber: b.roomNumber,
                 status: b.status,
@@ -293,7 +303,13 @@ exports.updateUnit = async (req, res) => {
 
             // 1. Update existing bedrooms or create new ones up to numBedrooms
             for (let i = 0; i < numBedrooms; i++) {
-                const newName = `${civic}-${uNum}-${i + 1}`;
+                // Default auto-generated name
+                let newName = `${civic}-${uNum}-${i + 1}`;
+
+                // Use custom identifier if provided
+                if (Array.isArray(bedroomIdentifiers) && bedroomIdentifiers[i]) {
+                    newName = bedroomIdentifiers[i];
+                }
 
                 if (i < existingBedrooms.length) {
                     // Update existing
@@ -384,7 +400,7 @@ exports.getVacantBedrooms = async (req, res) => {
         // Format bedrooms for dropdown: [Property Name]-[Bedroom Number] (e.g., 82-101-1)
         const formatted = bedrooms.map(b => ({
             id: b.id,
-            bedroomNumber: `${b.unit.property.civicNumber || ''}-${b.unit.unitNumber || b.unit.name}-${b.roomNumber}`,
+            bedroomNumber: b.bedroomNumber,
             originalBedroomNumber: b.bedroomNumber,
             displayName: `${b.unit.property.name}-${b.unit.property.civicNumber || ''}-${b.unit.unitNumber || b.unit.name}-${b.roomNumber}`,
             unitNumber: b.unit.unitNumber,
@@ -424,7 +440,7 @@ exports.deleteUnit = async (req, res) => {
         }
 
         // Use transaction to delete all related records
-        await prisma.$transaction(async (tx) => {
+        const result = await prisma.$transaction(async (tx) => {
             // Delete associated invoices first (FK constraint)
             await tx.invoice.deleteMany({
                 where: { unitId: unitId }

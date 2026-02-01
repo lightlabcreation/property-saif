@@ -37,7 +37,8 @@ exports.getAllTenants = async (req, res) => {
                 insurances: true,
                 documents: true,
                 residents: true,
-                parent: true
+                parent: true,
+                companyContacts: true
             }
         });
 
@@ -49,13 +50,7 @@ exports.getAllTenants = async (req, res) => {
             let displayName = t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim();
 
             if (t.type === 'COMPANY' && t.companyName) {
-                // If contact name exists, show "Company Name (Contact Name)"
-                if (displayName) {
-                    displayName = `${t.companyName} (${displayName})`;
-                } else {
-                    // If no contact name, just show company name
-                    displayName = t.companyName;
-                }
+                displayName = t.companyName;
             }
 
             return {
@@ -68,6 +63,12 @@ exports.getAllTenants = async (req, res) => {
                 companyDetails: t.companyDetails,
                 email: t.email,
                 phone: t.phone,
+                street: t.street,
+                street2: t.street2,
+                city: t.city,
+                state: t.state,
+                postalCode: t.postalCode,
+                country: t.country,
                 propertyId: activeLease?.unit?.propertyId || t.buildingId || null,
                 unitId: activeLease?.unitId || t.unitId || null,
                 bedroomId: activeLease?.bedroomId || t.bedroomId || null,
@@ -80,6 +81,7 @@ exports.getAllTenants = async (req, res) => {
                 insurance: t.insurances,
                 documents: t.documents,
                 residents: t.residents,
+                companyContacts: t.companyContacts,
                 parentId: t.parentId,
                 parentName: t.parent ? t.parent.name || `${t.parent.firstName || ''} ${t.parent.lastName || ''}`.trim() : null,
                 inviteToken: t.inviteToken,
@@ -159,7 +161,11 @@ exports.getTenantById = async (req, res) => {
 
 // POST /api/admin/tenants
 exports.createTenant = catchAsync(async (req, res, next) => {
-    const { firstName, lastName, email, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents, parentId } = req.body;
+    const {
+        firstName, lastName, email, type, unitId, bedroomId, propertyId,
+        companyName, companyDetails, residents, parentId,
+        street, city, state, postalCode, country
+    } = req.body;
     let { phone, password } = req.body;
 
     const errors = {};
@@ -208,10 +214,10 @@ exports.createTenant = catchAsync(async (req, res, next) => {
 
     // Transaction to ensure atomicity
     const result = await prisma.$transaction(async (prisma) => {
-        // Check if email already exists (only if email is provided)
-        if (email) {
+        // Check if email already exists (only if email is provided and not empty)
+        if (email && email.trim() !== '') {
             const existingUser = await prisma.user.findUnique({
-                where: { email }
+                where: { email: email.trim() }
             });
 
             if (existingUser) {
@@ -222,6 +228,33 @@ exports.createTenant = catchAsync(async (req, res, next) => {
         }
 
         // 1. Create User (Tenant/Resident)
+        const normalizedType = type ? type.toUpperCase() : 'INDIVIDUAL';
+        let sanitizedParentId = (parentId && !isNaN(parseInt(parentId))) ? parseInt(parentId) : null;
+        let sanitizedBuildingId = (propertyId && !isNaN(parseInt(propertyId))) ? parseInt(propertyId) : null;
+        let sanitizedUnitId = (unitId && !isNaN(parseInt(unitId))) ? parseInt(unitId) : null;
+        let sanitizedBedroomId = (bedroomId && !isNaN(parseInt(bedroomId))) ? parseInt(bedroomId) : null;
+
+        if (normalizedType === 'RESIDENT') {
+            if (!sanitizedParentId) {
+                const err = new AppError('Responsible Party is required for Residents', 400);
+                err.errors = { parentId: 'Responsible Party is required' };
+                throw err;
+            }
+
+            // If building/unit not provided for resident, inherit from parent
+            if (!sanitizedBuildingId || !sanitizedUnitId) {
+                const parent = await prisma.user.findUnique({
+                    where: { id: sanitizedParentId },
+                    select: { buildingId: true, unitId: true, bedroomId: true }
+                });
+                if (parent) {
+                    sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
+                    sanitizedUnitId = sanitizedUnitId || parent.unitId;
+                    sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
+                }
+            }
+        }
+
         const inviteToken = normalizedType !== 'RESIDENT' ? crypto.randomBytes(32).toString('hex') : null;
         const inviteExpires = normalizedType !== 'RESIDENT' ? new Date() : null;
         if (inviteExpires) inviteExpires.setDate(inviteExpires.getDate() + 7);
@@ -231,24 +264,24 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 name: `${firstName} ${lastName}`.trim(),
                 firstName,
                 lastName,
-                email,
+                email: (email && email.trim() !== '') ? email.trim() : null,
                 phone,
                 type: normalizedType,
-                companyName: normalizedType === 'COMPANY' ? companyName : null,
-                companyDetails: normalizedType === 'COMPANY' ? companyDetails : null,
-                street: req.body.street || null,
-                city: req.body.city || null,
-                state: req.body.state || null,
-                postalCode: req.body.postalCode || null,
-                country: req.body.country || null,
+                companyName: normalizedType === 'COMPANY' ? (companyName || null) : null,
+                companyDetails: normalizedType === 'COMPANY' ? (companyDetails || null) : null,
+                street: street || null,
+                city: city || null,
+                state: state || null,
+                postalCode: postalCode || null,
+                country: country || null,
                 role: 'TENANT',
-                buildingId: propertyId ? parseInt(propertyId) : null,
-                unitId: unitId ? parseInt(unitId) : null,
-                bedroomId: bedroomId ? parseInt(bedroomId) : null,
-                parentId: parentId ? parseInt(parentId) : null,
-                password: hashedPassword, // Will be null initially unless provided
-                inviteToken: null,
-                inviteExpires: null,
+                buildingId: sanitizedBuildingId,
+                unitId: sanitizedUnitId,
+                bedroomId: sanitizedBedroomId,
+                parentId: sanitizedParentId,
+                password: hashedPassword,
+                inviteToken,
+                inviteExpires,
             }
         });
 
@@ -406,7 +439,11 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
         return next(new AppError('Invalid tenant ID', 400));
     }
 
-    const { firstName, lastName, email, type, unitId, bedroomId, propertyId, companyName, companyDetails, residents, parentId } = req.body;
+    const {
+        firstName, lastName, email, type, unitId, bedroomId, propertyId,
+        companyName, companyDetails, residents, parentId,
+        street, city, state, postalCode, country
+    } = req.body;
     let { phone } = req.body;
 
     const errors = {};
@@ -469,11 +506,11 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
                 type: normalizedType,
                 companyName: normalizedType === 'COMPANY' ? companyName : null,
                 companyDetails: normalizedType === 'COMPANY' ? companyDetails : null,
-                street: req.body.street || undefined,
-                city: req.body.city || undefined,
-                state: req.body.state || undefined,
-                postalCode: req.body.postalCode || undefined,
-                country: req.body.country || undefined,
+                street: street || undefined,
+                city: city || undefined,
+                state: state || undefined,
+                postalCode: postalCode || undefined,
+                country: country || undefined,
                 buildingId: propertyId ? parseInt(propertyId) : null,
                 unitId: unitId ? parseInt(unitId) : null,
                 bedroomId: bedroomId ? parseInt(bedroomId) : null,

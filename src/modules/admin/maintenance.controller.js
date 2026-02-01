@@ -65,12 +65,17 @@ exports.createTask = async (req, res) => {
 exports.updateTask = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, name, notes } = req.body;
+        const { status, name, notes, propertyId, type, frequency, dueDate, vendor } = req.body;
 
         const data = {};
         if (status) data.status = status;
         if (name) data.name = name;
-        if (notes) data.notes = notes;
+        if (notes !== undefined) data.notes = notes;
+        if (propertyId) data.propertyId = parseInt(propertyId);
+        if (type) data.type = type;
+        if (frequency) data.frequency = frequency;
+        if (dueDate) data.dueDate = new Date(dueDate);
+        if (vendor !== undefined) data.vendor = vendor;
 
         const updated = await prisma.maintenanceTask.update({
             where: { id: parseInt(id) },
@@ -79,6 +84,21 @@ exports.updateTask = async (req, res) => {
 
         res.json(updated);
     } catch (e) {
+        console.error(e);
         res.status(500).json({ message: 'Error updating task' });
+    }
+};
+
+// DELETE /api/admin/maintenance/:id
+exports.deleteTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.maintenanceTask.delete({
+            where: { id: parseInt(id) }
+        });
+        res.json({ message: 'Task deleted' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Error deleting task' });
     }
 };

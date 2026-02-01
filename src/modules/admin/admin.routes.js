@@ -42,6 +42,8 @@ router.get('/properties/:id', adminController.getPropertyDetails);
 router.get('/tickets', ticketController.getAllTickets);
 router.post('/tickets', ticketController.createTicket);
 router.put('/tickets/:id/status', ticketController.updateTicketStatus);
+router.put('/tickets/:id', ticketController.updateTicket);
+router.delete('/tickets/:id', ticketController.deleteTicket);
 router.get('/tickets/:ticketId/attachments/:attachmentId', ticketController.getTicketAttachment);
 
 router.get('/invoices', invoiceController.getInvoices);
@@ -78,6 +80,7 @@ router.post('/insurance/:id/reject', insuranceController.rejectInsurance);
 router.get('/maintenance', maintenanceController.getTasks);
 router.post('/maintenance', maintenanceController.createTask);
 router.put('/maintenance/:id', maintenanceController.updateTask);
+router.delete('/maintenance/:id', maintenanceController.deleteTask);
 
 router.get('/accounting/transactions', accountingController.getTransactions);
 router.post('/accounting/transactions', accountingController.createTransaction);

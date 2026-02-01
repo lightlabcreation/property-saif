@@ -660,22 +660,35 @@ exports.createLease = catchAsync(async (req, res, next) => {
         const tenant = lease.tenant;
         let notificationResult = { status: 'Skipped', message: '' };
 
-        if (tenant.type === 'RESIDENT') {
-            notificationResult.message = 'Residents do not receive portal credentials.';
-        } else if (tenant.password) {
-            notificationResult.message = 'Tenant already has portal access.';
-        } else if (!tenant.email || !tenant.phone) {
-            notificationResult.message = 'Tenant is missing email or phone for notifications.';
-        } else {
+        // When lease is for a RESIDENT, send credentials to the parent (billable tenant) so they can access the portal
+        const recipientUser = tenant.type === 'RESIDENT'
+            ? (tenant.parentId ? await tx.user.findUnique({ where: { id: tenant.parentId } }) : null)
+            : tenant;
+
+        const recipientName = recipientUser
+            ? (recipientUser.name || [recipientUser.firstName, recipientUser.lastName].filter(Boolean).join(' ').trim() || 'Responsible party')
+            : '';
+
+        if (tenant.type === 'RESIDENT' && !recipientUser) {
+            notificationResult.message = 'Responsible party not found. Cannot send credentials.';
+        } else if (recipientUser && recipientUser.password) {
+            notificationResult.message = recipientUser.id === tenant.id
+                ? 'Tenant already has portal access.'
+                : `${recipientName} already has portal access.`;
+        } else if (recipientUser && (!recipientUser.email || !recipientUser.phone)) {
+            notificationResult.message = recipientUser.id === tenant.id
+                ? 'Tenant is missing email or phone for notifications.'
+                : `${recipientName} is missing email or phone for notifications.`;
+        } else if (recipientUser) {
             const password = Math.floor(100000 + Math.random() * 900000).toString();
             const hashedPassword = await bcrypt.hash(password, 10);
             const inviteToken = crypto.randomBytes(32).toString('hex');
             const inviteExpires = new Date();
             inviteExpires.setDate(inviteExpires.getDate() + 7);
 
-            // Update tenant with new credentials
+            // Update recipient (parent or tenant) with new credentials
             await tx.user.update({
-                where: { id: tId },
+                where: { id: recipientUser.id },
                 data: {
                     password: hashedPassword,
                     inviteToken,
@@ -683,25 +696,28 @@ exports.createLease = catchAsync(async (req, res, next) => {
                 }
             });
 
-            // Send Notifications
-            const welcomeMsg = `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${tenant.email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
+            const loginUrl = process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com';
+            const welcomeMsg = tenant.type === 'RESIDENT'
+                ? `A bedroom lease was created for your resident. Your portal credentials: Email: ${recipientUser.email} Password: ${password} Login: ${loginUrl}/login`
+                : `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${recipientUser.email} \nPassword: ${password} \n\nLogin here: ${loginUrl}/login`;
 
             notificationResult = { status: 'Attempted', sms: false, email: false };
 
-            // SMS
+            // SMS to parent/tenant
             try {
-                const sRes = await smsService.sendSMS(tenant.phone, welcomeMsg);
+                const sRes = await smsService.sendSMS(recipientUser.phone, welcomeMsg);
                 if (sRes.success) notificationResult.sms = true;
             } catch (err) { console.error('Lease SMS Error:', err); }
 
-            // Email
+            // Email to parent/tenant
             try {
-                const eRes = await emailService.sendEmail(tenant.email, 'Welcome - Your Portal Credentials', welcomeMsg);
+                const eRes = await emailService.sendEmail(recipientUser.email, 'Welcome - Your Portal Credentials', welcomeMsg);
                 if (eRes.success) notificationResult.email = true;
             } catch (err) { console.error('Lease Email Error:', err); }
 
             notificationResult.status = (notificationResult.sms || notificationResult.email) ? 'Sent' : 'Failed';
-            console.log(`[Lease Creation] Credentials status: ${notificationResult.status} for ${tenant.email}`);
+            const who = tenant.type === 'RESIDENT' ? 'parent' : 'tenant';
+            console.log(`[Lease Creation] Credentials status: ${notificationResult.status} for ${who} ${recipientUser.email}`);
         }
 
         return { lease, notificationResult };

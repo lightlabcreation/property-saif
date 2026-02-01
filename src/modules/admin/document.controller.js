@@ -9,7 +9,9 @@ exports.getAllDocuments = async (req, res) => {
         const documents = await prisma.document.findMany({
             include: {
                 user: true,
-                lease: true,
+                lease: {
+                    include: { tenant: true }
+                },
                 unit: true,
                 property: true,
                 invoice: true
@@ -47,9 +49,10 @@ exports.downloadDocument = async (req, res) => {
                     return res.status(proxyRes.statusCode).json({ message: 'Failed to fetch file from storage' });
                 }
 
-                // Set headers for download
+                // Set headers for inline preview (or download if disposition=attachment)
+                const disposition = req.query.disposition || 'inline';
                 res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/pdf');
-                res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+                res.setHeader('Content-Disposition', `${disposition}; filename="${fileName}"`);
 
                 // Pipe the response
                 proxyRes.pipe(res);
@@ -62,14 +65,22 @@ exports.downloadDocument = async (req, res) => {
         // Handle Local Files (Relative)
         const absolutePath = path.resolve(process.cwd(), doc.fileUrl.startsWith('/') ? doc.fileUrl.substring(1) : doc.fileUrl);
 
-        res.download(absolutePath, fileName, (err) => {
-            if (err) {
-                console.error('File download error:', err);
-                if (!res.headersSent) {
-                    res.status(404).json({ message: 'File on disk not found' });
+        const disposition = req.query.disposition || 'inline';
+        if (disposition === 'inline') {
+            res.sendFile(absolutePath, (err) => {
+                if (err) {
+                    console.error('File send error:', err);
+                    if (!res.headersSent) res.status(404).json({ message: 'File not found' });
                 }
-            }
-        });
+            });
+        } else {
+            res.download(absolutePath, fileName, (err) => {
+                if (err) {
+                    console.error('File download error:', err);
+                    if (!res.headersSent) res.status(404).json({ message: 'File on disk not found' });
+                }
+            });
+        }
 
     } catch (e) {
         console.error(e);
