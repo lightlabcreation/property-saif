@@ -31,6 +31,7 @@ router.get('/dashboard/stats', adminController.getDashboardStats);
 router.get('/owners', adminController.getOwners);
 router.post('/owners', adminController.createOwner);
 router.put('/owners/:id', adminController.updateOwner);
+router.post('/owners/:id/send-invite', adminController.sendInvite);
 router.delete('/owners/:id', adminController.deleteOwner);
 router.get('/properties', adminController.getProperties);
 router.get('/properties/available', adminController.getAvailableProperties);

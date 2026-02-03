@@ -9,7 +9,11 @@ exports.getRevenueStats = async (req, res) => {
         let propertyIds = [];
         if (parsedOwnerId) {
             const ownerProperties = await prisma.property.findMany({
-                where: { ownerId: parsedOwnerId },
+                where: {
+                    owners: {
+                        some: { id: parsedOwnerId }
+                    }
+                },
                 select: { id: true }
             });
             propertyIds = ownerProperties.map(p => p.id);
@@ -88,7 +92,11 @@ exports.getVacancyStats = async (req, res) => {
 
         const units = await prisma.unit.findMany({
             where: parsedOwnerId ? {
-                property: { ownerId: parsedOwnerId }
+                property: {
+                    owners: {
+                        some: { id: parsedOwnerId }
+                    }
+                }
             } : {},
             include: { property: true }
         });

@@ -36,15 +36,60 @@ exports.getAllTenants = async (req, res) => {
                 },
                 insurances: true,
                 documents: true,
-                residents: true,
+                residents: {
+                    include: {
+                        residentLease: {
+                            include: { unit: true }
+                        },
+                        leases: {
+                            where: { status: { in: ['Active', 'DRAFT'] } },
+                            include: { unit: true }
+                        }
+                    }
+                },
                 parent: true,
-                companyContacts: true
+                companyContacts: true,
+                residentLease: {
+                    include: {
+                        unit: {
+                            include: {
+                                property: true
+                            }
+                        }
+                    }
+                }
             }
         });
 
         const formatted = tenants.map(t => {
             // Find active lease first, then fall back to DRAFT
-            const activeLease = t.leases.find(l => l.status === 'Active') || t.leases.find(l => l.status === 'DRAFT');
+            // Check BOTH primary leases and the residentLease (co-tenant)
+            // NEW: Also check residents' leases to inherit status for parents
+            let activeLease = t.leases.find(l => l.status === 'Active') ||
+                (t.residentLease?.status === 'Active' ? t.residentLease : null) ||
+                t.leases.find(l => l.status === 'DRAFT') ||
+                (t.residentLease?.status === 'DRAFT' ? t.residentLease : null);
+
+            // Inherit from residents if parent has no active lease
+            if (!activeLease && t.residents?.length > 0) {
+                const residentWithLease = t.residents.find(r => {
+                    // Check residentLease (co-tenant)
+                    const hasResidentLease = r.residentLease?.status === 'Active' || r.residentLease?.status === 'DRAFT';
+                    // Check primary leases (if resident is primary signer)
+                    const hasPrimaryLease = r.leases?.some(l => l.status === 'Active' || l.status === 'DRAFT');
+
+                    return hasResidentLease || hasPrimaryLease;
+                });
+
+                if (residentWithLease) {
+                    // Prioritize active statuses for the parent display
+                    if (residentWithLease.residentLease?.status === 'Active' || residentWithLease.residentLease?.status === 'DRAFT') {
+                        activeLease = residentWithLease.residentLease;
+                    } else if (residentWithLease.leases?.length > 0) {
+                        activeLease = residentWithLease.leases.find(l => l.status === 'Active') || residentWithLease.leases[0];
+                    }
+                }
+            }
 
             // Display logic: For COMPANY type, show "Company Name (Contact Name)"
             let displayName = t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim();
@@ -110,7 +155,11 @@ exports.getTenantById = async (req, res) => {
                 },
                 insurances: true,
                 documents: true, // Direct ownership documents
-                residents: true
+                residents: true,
+                residentLease: {
+                    include: { unit: true }
+                },
+                parent: true
             }
         });
 
@@ -241,17 +290,20 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 throw err;
             }
 
-            // If building/unit not provided for resident, inherit from parent
-            if (!sanitizedBuildingId || !sanitizedUnitId) {
-                const parent = await prisma.user.findUnique({
-                    where: { id: sanitizedParentId },
-                    select: { buildingId: true, unitId: true, bedroomId: true }
-                });
-                if (parent) {
-                    sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
-                    sanitizedUnitId = sanitizedUnitId || parent.unitId;
-                    sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
+            // Residents inherit from parent ALWAYS if not provided
+            const parent = await prisma.user.findUnique({
+                where: { id: sanitizedParentId },
+                include: {
+                    leases: { where: { status: 'Active' }, take: 1 }
                 }
+            });
+
+            if (parent) {
+                sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
+                sanitizedUnitId = sanitizedUnitId || parent.unitId;
+                sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
+                // Important: Link to parent's active lease
+                req.body.leaseId = req.body.leaseId || parent.leases[0]?.id;
             }
         }
 
@@ -279,6 +331,7 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 unitId: sanitizedUnitId,
                 bedroomId: sanitizedBedroomId,
                 parentId: sanitizedParentId,
+                leaseId: req.body.leaseId || null, // Link to lease
                 password: hashedPassword,
                 inviteToken,
                 inviteExpires,
@@ -494,6 +547,27 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
             }
         }
 
+        let sanitizedParentId = (parentId && !isNaN(parseInt(parentId))) ? parseInt(parentId) : (normalizedType === 'RESIDENT' ? undefined : null);
+        let sanitizedBuildingId = propertyId ? parseInt(propertyId) : null;
+        let sanitizedUnitId = unitId ? parseInt(unitId) : null;
+        let sanitizedBedroomId = bedroomId ? parseInt(bedroomId) : null;
+        let sanitizedLeaseId = req.body.leaseId ? parseInt(req.body.leaseId) : undefined;
+
+        if (normalizedType === 'RESIDENT' && sanitizedParentId) {
+            const parent = await prisma.user.findUnique({
+                where: { id: sanitizedParentId },
+                include: {
+                    leases: { where: { status: 'Active' }, take: 1 }
+                }
+            });
+            if (parent) {
+                sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
+                sanitizedUnitId = sanitizedUnitId || parent.unitId;
+                sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
+                sanitizedLeaseId = sanitizedLeaseId || parent.leases[0]?.id;
+            }
+        }
+
         // 1. Update basic info
         const user = await prisma.user.update({
             where: { id },
@@ -511,10 +585,11 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
                 state: state || undefined,
                 postalCode: postalCode || undefined,
                 country: country || undefined,
-                buildingId: propertyId ? parseInt(propertyId) : null,
-                unitId: unitId ? parseInt(unitId) : null,
-                bedroomId: bedroomId ? parseInt(bedroomId) : null,
-                parentId: parentId ? parseInt(parentId) : null
+                buildingId: sanitizedBuildingId,
+                unitId: sanitizedUnitId,
+                bedroomId: sanitizedBedroomId,
+                parentId: sanitizedParentId !== undefined ? sanitizedParentId : null,
+                leaseId: sanitizedLeaseId !== undefined ? sanitizedLeaseId : null
             }
         });
 
@@ -665,27 +740,106 @@ exports.getTenantTickets = async (req, res) => {
 // POST /api/admin/tenants/:id/send-invite
 exports.sendInvite = catchAsync(async (req, res, next) => {
     const id = parseInt(req.params.id);
+    const { methods } = req.body; // ['email', 'sms']
+
     if (isNaN(id)) {
         throw new AppError('Invalid tenant ID', 400);
+    }
+
+    if (!methods || !Array.isArray(methods) || methods.length === 0) {
+        throw new AppError('Please select at least one delivery method (Email or SMS)', 400);
+    }
+
+    const tenant = await prisma.user.findUnique({
+        where: { id },
+        include: { parent: true }
+    });
+
+    if (!tenant) {
+        throw new AppError('Tenant not found', 404);
+    }
+
+    // Determine recipient: parent for residents, otherwise the tenant themselves
+    const recipientUser = tenant.type === 'RESIDENT' ? tenant.parent : tenant;
+
+    if (!recipientUser) {
+        throw new AppError('Recipient user not found (Resident may be missing responsible party)', 400);
+    }
+
+    let password = null;
+    let hashedPassword = undefined;
+
+    // If user has no password, generate one
+    if (!recipientUser.password) {
+        password = Math.floor(100000 + Math.random() * 900000).toString();
+        hashedPassword = await bcrypt.hash(password, 10);
     }
 
     const inviteToken = crypto.randomBytes(32).toString('hex');
     const inviteExpires = new Date();
     inviteExpires.setDate(inviteExpires.getDate() + 7);
 
-    const user = await prisma.user.update({
-        where: { id },
-        data: { inviteToken, inviteExpires }
+    // Update recipient with new credentials/token
+    const updatedUser = await prisma.user.update({
+        where: { id: recipientUser.id },
+        data: {
+            ...(hashedPassword ? { password: hashedPassword } : {}),
+            inviteToken,
+            inviteExpires
+        }
     });
 
-    // In a real system, send email here. 
-    // For now, we return the token/link for the admin to use or verify.
+    const loginUrl = process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com';
+    const inviteLink = `${loginUrl}/tenant/invite/${inviteToken}`;
+
+    let welcomeMsg = `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${updatedUser.email}`;
+    if (password) {
+        welcomeMsg += ` \nPassword: ${password}`;
+    }
+    welcomeMsg += ` \n\nAccess your portal here: ${inviteLink}`;
+
+    const results = {
+        email: { attempted: false, success: false },
+        sms: { attempted: false, success: false }
+    };
+
+    if (methods.includes('email')) {
+        results.email.attempted = true;
+        if (!updatedUser.email) {
+            results.email.error = 'No email address on file';
+        } else {
+            try {
+                const eRes = await emailService.sendEmail(updatedUser.email, 'Welcome - Your Portal Access', welcomeMsg);
+                results.email.success = eRes.success;
+                if (!eRes.success) results.email.error = eRes.error;
+            } catch (err) {
+                results.email.error = err.message;
+            }
+        }
+    }
+
+    if (methods.includes('sms')) {
+        results.sms.attempted = true;
+        if (!updatedUser.phone) {
+            results.sms.error = 'No phone number on file';
+        } else {
+            try {
+                const sRes = await smsService.sendSMS(updatedUser.phone, welcomeMsg);
+                results.sms.success = sRes.success;
+                if (!sRes.success) results.sms.error = sRes.error;
+            } catch (err) {
+                results.sms.error = err.message;
+            }
+        }
+    }
+
     res.json({
         success: true,
-        message: 'Invite generated successfully',
+        message: 'Invitations processed',
         data: {
-            inviteToken: user.inviteToken,
-            inviteLink: `${process.env.FRONTEND_URL || `https://property-n.kiaantechnology.com` || 'http://localhost:5173'}/tenant/invite/${user.inviteToken}`
+            recipient: updatedUser.email,
+            results,
+            inviteLink // Still return for admin convenience
         }
     });
 });

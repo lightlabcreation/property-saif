@@ -16,7 +16,11 @@ exports.getComplianceDashboard = async (req, res) => {
 
         if (ownerId) {
             leaseWhere.unit = {
-                property: { ownerId: parseInt(ownerId) }
+                property: {
+                    owners: {
+                        some: { id: parseInt(ownerId) }
+                    }
+                }
             };
         }
 

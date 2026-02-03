@@ -20,8 +20,12 @@ exports.getAllUnits = async (req, res) => {
                 include: {
                     property: true,
                     leases: {
-                        where: { status: { in: ['Active', 'DRAFT'] } },
-                        select: { id: true, status: true }
+                        where: { status: 'Active' },
+                        select: {
+                            id: true,
+                            status: true,
+                            tenant: { select: { type: true } }
+                        }
                     }
                 },
                 skip,
@@ -51,9 +55,10 @@ exports.getAllUnits = async (req, res) => {
                 propertyId: u.propertyId,
                 bedrooms: u.bedrooms,
                 rentalMode: u.rentalMode,
-                activeLeaseCount: u.leases ? u.leases.filter(l => l.status === 'Active').length : 0,
-                draftLeaseCount: u.leases ? u.leases.filter(l => l.status === 'DRAFT').length : 0,
-                activeLeases: u.leases ? u.leases.length : 0 // Keep for backward compatibility
+                activeLeaseCount: u.leases ? u.leases.length : 0,
+                hasCompanyLease: u.leases ? u.leases.some(l => l.tenant.type === 'COMPANY') : false,
+                draftLeaseCount: 0, // Simplified
+                activeLeases: u.leases ? u.leases.length : 0
             };
         });
 
@@ -380,7 +385,19 @@ exports.getVacantBedrooms = async (req, res) => {
         // Fetch all bedrooms with their unit and property info
         const bedrooms = await prisma.bedroom.findMany({
             where: {
-                status: 'Vacant',
+                OR: [
+                    { status: 'Vacant' },
+                    {
+                        unit: {
+                            leases: {
+                                some: {
+                                    status: 'Active',
+                                    tenant: { type: 'COMPANY' }
+                                }
+                            }
+                        }
+                    }
+                ],
                 unit: unitWhere
             },
             include: {

@@ -104,7 +104,6 @@ model Property {
   name             String
   address          String
   status           String            @default("Active")
-  ownerId          Int?
   companyId        Int?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
@@ -115,11 +114,10 @@ model Property {
   street           String?
   documents        Document[]
   maintenanceTasks MaintenanceTask[]
-  owner            User?             @relation("OwnerProperties", fields: [ownerId], references: [id], map: "Property_ownerId_fkey")
+  owners           User[]            @relation("OwnerProperties")
   company          Company?          @relation("CompanyProperties", fields: [companyId], references: [id])
   units            Unit[]
 
-  @@index([ownerId], map: "Property_ownerId_fkey")
   @@index([companyId], map: "Property_companyId_fkey")
   @@map("property")
 }

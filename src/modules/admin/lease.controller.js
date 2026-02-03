@@ -35,6 +35,7 @@ exports.getLeaseHistory = async (req, res) => {
         const leases = await prisma.lease.findMany({
             include: {
                 tenant: true,
+                residents: true, // Include co-tenants
                 unit: {
                     include: { property: true }
                 },
@@ -43,26 +44,34 @@ exports.getLeaseHistory = async (req, res) => {
             orderBy: { createdAt: 'desc' }
         });
 
-        const formatted = leases.map(l => ({
-            id: l.id,
-            leaseType: l.leaseType === 'FULL_UNIT' ? 'Full Unit Lease' : 'Bedroom Lease',
-            buildingName: l.unit.property.civicNumber
-                ? `${l.unit.property.name} - ${l.unit.property.civicNumber}`
-                : l.unit.property.name,
-            unit: l.unit.unitNumber || l.unit.name,
-            bedroom: l.bedroom ? l.bedroom.bedroomNumber : '-',
-            tenant: l.tenant.name || `${l.tenant.firstName || ''} ${l.tenant.lastName || ''}`.trim(),
-            tenantFirstName: l.tenant.firstName,
-            tenantLastName: l.tenant.lastName,
-            term: l.startDate && l.endDate
-                ? `${l.startDate.toISOString().substring(0, 10)} to ${l.endDate.toISOString().substring(0, 10)}`
-                : 'Dates Pending',
-            status: l.status,
-            startDate: l.startDate ? l.startDate.toISOString().substring(0, 10) : '',
-            endDate: l.endDate ? l.endDate.toISOString().substring(0, 10) : '',
-            monthlyRent: l.monthlyRent || 0,
-            tenantId: l.tenantId
-        }));
+        const formatted = leases.map(l => {
+            const primaryName = l.tenant.name || `${l.tenant.firstName || ''} ${l.tenant.lastName || ''}`.trim();
+            const residentNames = l.residents.map(r => r.name || `${r.firstName || ''} ${r.lastName || ''}`.trim());
+            const allTenants = [primaryName, ...residentNames].filter(Boolean).join(', ');
+
+            return {
+                id: l.id,
+                leaseType: l.leaseType === 'FULL_UNIT' ? 'Full Unit Lease' : 'Bedroom Lease',
+                buildingName: l.unit.property.civicNumber
+                    ? `${l.unit.property.name} - ${l.unit.property.civicNumber}`
+                    : l.unit.property.name,
+                unit: l.unit.unitNumber || l.unit.name,
+                bedroom: l.bedroom ? l.bedroom.bedroomNumber : '-',
+                tenant: allTenants, // Show all occupants
+                primaryTenantName: primaryName,
+                coTenants: residentNames,
+                tenantFirstName: l.tenant.firstName,
+                tenantLastName: l.tenant.lastName,
+                term: l.startDate && l.endDate
+                    ? `${l.startDate.toISOString().substring(0, 10)} to ${l.endDate.toISOString().substring(0, 10)}`
+                    : 'Dates Pending',
+                status: l.status,
+                startDate: l.startDate ? l.startDate.toISOString().substring(0, 10) : '',
+                endDate: l.endDate ? l.endDate.toISOString().substring(0, 10) : '',
+                monthlyRent: l.monthlyRent || 0,
+                tenantId: l.tenantId
+            };
+        });
 
         res.json(formatted);
     } catch (e) {
@@ -375,7 +384,14 @@ exports.activateLease = catchAsync(async (req, res, next) => {
         return updatedLease;
     });
 
-    res.json({ success: true, data: result });
+    // 5. Automatic Invite for Activation
+    const notificationResult = await processOnboardingInvitations(lease.tenantId);
+
+    res.json({
+        success: true,
+        data: result,
+        notifications: notificationResult
+    });
 });
 
 // GET /api/admin/leases/active/:unitId
@@ -438,7 +454,8 @@ exports.createLease = catchAsync(async (req, res, next) => {
             include: {
                 bedroomsList: true,
                 leases: {
-                    where: { status: { in: ['Active', 'DRAFT'] } }
+                    where: { status: { in: ['Active', 'DRAFT'] } },
+                    include: { tenant: { select: { type: true } } }
                 }
             }
         });
@@ -474,10 +491,14 @@ exports.createLease = catchAsync(async (req, res, next) => {
 
         // VALIDATION FOR BEDROOM LEASE
         if (isBedroomLease) {
-            // Check for EXISTING Active lease in FULL_UNIT mode
-            const activeFullLease = unit.leases.find(l => l.status === 'Active' && (unit.rentalMode === 'FULL_UNIT' || !unit.rentalMode));
+            // Check for EXISTING Active lease in FULL_UNIT mode (blocking only if NOT a company lease)
+            const activeFullLease = unit.leases.find(l =>
+                l.status === 'Active' &&
+                (unit.rentalMode === 'FULL_UNIT' || !unit.rentalMode) &&
+                l.tenant.type !== 'COMPANY'
+            );
             if (activeFullLease) {
-                throw new AppError('Cannot lease bedroom: This unit already has an ACTIVE full unit lease.', 400);
+                throw new AppError('Cannot lease bedroom: This unit already has an ACTIVE individual full unit lease.', 400);
             }
 
             // Check for DRAFT full unit leases for DIFFERENT tenants
@@ -493,8 +514,16 @@ exports.createLease = catchAsync(async (req, res, next) => {
             }
 
             // Check if bedroom is available
+            const hasCompanyLease = unit.leases.some(l => l.status === 'Active' && l.tenant.type === 'COMPANY');
+            const hasExistingResidentLease = unit.leases.some(l => l.status === 'Active' && l.bedroomId === bId && l.tenant.type === 'RESIDENT');
+
             if (bedroom.status !== 'Vacant') {
-                throw new AppError(`Bedroom ${bedroom.bedroomNumber} is not available (current status: ${bedroom.status})`, 400);
+                // Special case: Allow if it's "Occupied" by a Company Lease but has no resident assigned yet
+                if (hasCompanyLease && !hasExistingResidentLease) {
+                    // This is fine, we are assigning the resident to a bedroom reserved by the company
+                } else {
+                    throw new AppError(`Bedroom ${bedroom.bedroomNumber} is not available (current status: ${bedroom.status})`, 400);
+                }
             }
         }
 
@@ -655,80 +684,114 @@ exports.createLease = catchAsync(async (req, res, next) => {
                 }
             });
         }
+        return { lease };
+    });
 
-        // 5. Handle Notifications (New Feature: Only send on Lease Creation)
-        const tenant = lease.tenant;
-        let notificationResult = { status: 'Skipped', message: '' };
+    // 5. Automatic Onboarding Invitations
+    // Check if sendCredentials flag is true (default to true if undefined for backward compatibility, 
+    // but the frontend will send it explicitly)
+    const sendCredentials = req.body.sendCredentials !== false;
 
-        // When lease is for a RESIDENT, send credentials to the parent (billable tenant) so they can access the portal
-        const recipientUser = tenant.type === 'RESIDENT'
-            ? (tenant.parentId ? await tx.user.findUnique({ where: { id: tenant.parentId } }) : null)
-            : tenant;
+    let notificationResult = { status: 'Skipped', message: 'Credentials not sent by user request.' };
 
-        const recipientName = recipientUser
-            ? (recipientUser.name || [recipientUser.firstName, recipientUser.lastName].filter(Boolean).join(' ').trim() || 'Responsible party')
-            : '';
+    if (sendCredentials) {
+        notificationResult = await processOnboardingInvitations(tId, coTenantIds);
+    }
 
-        if (tenant.type === 'RESIDENT' && !recipientUser) {
-            notificationResult.message = 'Responsible party not found. Cannot send credentials.';
-        } else if (recipientUser && recipientUser.password) {
-            notificationResult.message = recipientUser.id === tenant.id
-                ? 'Tenant already has portal access.'
-                : `${recipientName} already has portal access.`;
-        } else if (recipientUser && (!recipientUser.email || !recipientUser.phone)) {
-            notificationResult.message = recipientUser.id === tenant.id
-                ? 'Tenant is missing email or phone for notifications.'
-                : `${recipientName} is missing email or phone for notifications.`;
-        } else if (recipientUser) {
-            const password = Math.floor(100000 + Math.random() * 900000).toString();
-            const hashedPassword = await bcrypt.hash(password, 10);
+    res.status(201).json({
+        success: true,
+        data: result.lease,
+        notifications: notificationResult
+    });
+});
+
+// Helper function to handle automatic onboarding invitations for primary and co-tenants
+const processOnboardingInvitations = async (tenantId, coTenantIds = [], methods = ['email', 'sms']) => {
+    try {
+        const tenantIds = [tenantId, ...coTenantIds].filter(Boolean);
+        if (tenantIds.length === 0) return { status: 'Skipped', message: 'No tenants to invite' };
+
+        const users = await prisma.user.findMany({
+            where: { id: { in: tenantIds.map(id => parseInt(id)) } }
+        });
+
+        const results = {
+            total: users.length,
+            sent: 0,
+            failed: 0,
+            details: []
+        };
+
+        const loginUrl = process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com';
+
+        for (const user of users) {
+            let password = null;
+            let hashedPassword = undefined;
+
+            // Generate password if user has none
+            if (!user.password) {
+                password = Math.floor(100000 + Math.random() * 900000).toString();
+                hashedPassword = await bcrypt.hash(password, 10);
+            }
+
             const inviteToken = crypto.randomBytes(32).toString('hex');
             const inviteExpires = new Date();
             inviteExpires.setDate(inviteExpires.getDate() + 7);
 
-            // Update recipient (parent or tenant) with new credentials
-            await tx.user.update({
-                where: { id: recipientUser.id },
+            // Update user with credentials/token
+            const updatedUser = await prisma.user.update({
+                where: { id: user.id },
                 data: {
-                    password: hashedPassword,
+                    ...(hashedPassword ? { password: hashedPassword } : {}),
                     inviteToken,
                     inviteExpires
                 }
             });
 
-            const loginUrl = process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com';
-            const welcomeMsg = tenant.type === 'RESIDENT'
-                ? `A bedroom lease was created for your resident. Your portal credentials: Email: ${recipientUser.email} Password: ${password} Login: ${loginUrl}/login`
-                : `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${recipientUser.email} \nPassword: ${password} \n\nLogin here: ${loginUrl}/login`;
+            const inviteLink = `${loginUrl}/tenant/invite/${inviteToken}`;
+            let welcomeMsg = `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${updatedUser.email}`;
+            if (password) {
+                welcomeMsg += ` \nPassword: ${password}`;
+            }
+            welcomeMsg += ` \n\nAccess your portal here: ${inviteLink}`;
 
-            notificationResult = { status: 'Attempted', sms: false, email: false };
+            const sendResults = { email: false, sms: false };
 
-            // SMS to parent/tenant
-            try {
-                const sRes = await smsService.sendSMS(recipientUser.phone, welcomeMsg);
-                if (sRes.success) notificationResult.sms = true;
-            } catch (err) { console.error('Lease SMS Error:', err); }
+            if (methods.includes('email') && updatedUser.email) {
+                const eRes = await emailService.sendEmail(updatedUser.email, 'Welcome - Your Portal Access', welcomeMsg);
+                sendResults.email = eRes.success;
+            }
 
-            // Email to parent/tenant
-            try {
-                const eRes = await emailService.sendEmail(recipientUser.email, 'Welcome - Your Portal Credentials', welcomeMsg);
-                if (eRes.success) notificationResult.email = true;
-            } catch (err) { console.error('Lease Email Error:', err); }
+            if (methods.includes('sms') && updatedUser.phone) {
+                const sRes = await smsService.sendSMS(updatedUser.phone, welcomeMsg);
+                sendResults.sms = sRes.success;
+            }
 
-            notificationResult.status = (notificationResult.sms || notificationResult.email) ? 'Sent' : 'Failed';
-            const who = tenant.type === 'RESIDENT' ? 'parent' : 'tenant';
-            console.log(`[Lease Creation] Credentials status: ${notificationResult.status} for ${who} ${recipientUser.email}`);
+            if (sendResults.email || sendResults.sms) {
+                results.sent++;
+            } else {
+                results.failed++;
+            }
+
+            results.details.push({
+                userId: user.id,
+                email: updatedUser.email,
+                sentSms: sendResults.sms,
+                sentEmail: sendResults.email
+            });
         }
 
-        return { lease, notificationResult };
-    });
-
-    res.status(201).json({
-        success: true,
-        data: result.lease,
-        notifications: result.notificationResult
-    });
-});
+        return {
+            status: results.sent > 0 ? 'Sent' : 'Failed',
+            sms: results.details.some(d => d.sentSms),
+            email: results.details.some(d => d.sentEmail),
+            results
+        };
+    } catch (error) {
+        console.error('Onboarding Invitations Error:', error);
+        return { status: 'Failed', message: error.message };
+    }
+};
 
 // GET /api/admin/leases/units-with-tenants
 exports.getUnitsWithTenants = async (req, res) => {
@@ -746,14 +809,14 @@ exports.getUnitsWithTenants = async (req, res) => {
                 rentalMode: rentalMode,
                 leases: {
                     some: {
-                        status: { in: ['DRAFT', 'Active'] }
+                        status: 'Active'
                     }
                 }
             },
             include: {
                 leases: {
                     where: {
-                        status: { in: ['DRAFT', 'Active'] }
+                        status: 'Active'
                     },
                     include: {
                         tenant: true

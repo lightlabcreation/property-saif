@@ -2,6 +2,7 @@ const prisma = require('../../config/prisma');
 const bcrypt = require('bcrypt');
 const smsService = require('../../services/sms.service');
 const emailService = require('../../services/email.service');
+const crypto = require('crypto');
 
 exports.getDashboardStats = async (req, res) => {
     try {
@@ -12,7 +13,11 @@ exports.getDashboardStats = async (req, res) => {
         let propertyIds = [];
         if (parsedOwnerId) {
             const ownerProperties = await prisma.property.findMany({
-                where: { ownerId: parsedOwnerId },
+                where: {
+                    owners: {
+                        some: { id: parsedOwnerId }
+                    }
+                },
                 select: { id: true }
             });
             propertyIds = ownerProperties.map(p => p.id);
@@ -20,7 +25,11 @@ exports.getDashboardStats = async (req, res) => {
         }
 
         // Base filters
-        const propertyOnlyFilter = parsedOwnerId ? { ownerId: parsedOwnerId } : {};
+        const propertyOnlyFilter = parsedOwnerId ? {
+            owners: {
+                some: { id: parsedOwnerId }
+            }
+        } : {};
         const unitFilter = parsedOwnerId ? { propertyId: { in: propertyIds } } : {};
         const genericFilter = parsedOwnerId ? { unit: { propertyId: { in: propertyIds } } } : {};
 
@@ -131,15 +140,9 @@ exports.getAvailableProperties = async (req, res) => {
             status: 'Active'
         };
 
-        if (ownerId && ownerId !== 'null' && ownerId !== 'undefined') {
-            whereClause.OR = [
-                { ownerId: null },
-                { ownerId: parseInt(ownerId) }
-            ];
-        } else {
-            whereClause.ownerId = null;
-        }
-
+        // Since we are now Many-to-Many, any active property is 'available' to be 
+        // added to an owner's portfolio, regardless of whether it has other owners.
+        // The frontend will filter out properties already linked to the specific owner.
         console.log('Query where clause:', JSON.stringify(whereClause, null, 2));
 
         const properties = await prisma.property.findMany({
@@ -148,6 +151,12 @@ exports.getAvailableProperties = async (req, res) => {
                 units: {
                     select: {
                         status: true
+                    }
+                },
+                owners: {
+                    select: {
+                        id: true,
+                        name: true
                     }
                 }
             }
@@ -161,7 +170,7 @@ exports.getAvailableProperties = async (req, res) => {
             address: p.address,
             units: p.units.length,
             status: p.status,
-            ownerId: p.ownerId
+            ownerIds: p.owners?.map(o => o.id) || []
         }));
 
         res.json(formatted);
@@ -178,6 +187,12 @@ exports.getProperties = async (req, res) => {
                 units: {
                     select: {
                         status: true
+                    }
+                },
+                owners: {
+                    select: {
+                        id: true,
+                        name: true
                     }
                 }
             }
@@ -200,7 +215,8 @@ exports.getProperties = async (req, res) => {
                 units: totalUnits,
                 occupancy: `${occupancyRate}%`,
                 status: p.status,
-                ownerId: p.ownerId // Required for filtering in Owners.jsx
+                ownerNames: p.owners?.map(o => o.name).join(', ') || 'No Owner',
+                ownerIds: p.owners?.map(o => o.id) || []
             };
         });
 
@@ -228,6 +244,12 @@ exports.getPropertyDetails = async (req, res) => {
                         invoices: {
                             where: { status: 'paid' }
                         }
+                    }
+                },
+                owners: {
+                    select: {
+                        id: true,
+                        name: true
                     }
                 }
             }
@@ -261,6 +283,7 @@ exports.getPropertyDetails = async (req, res) => {
             totalUnits,
             occupancyRate,
             revenue: totalRevenue,
+            owners: property.owners,
             units: formattedUnits
         });
 
@@ -295,9 +318,13 @@ exports.createProperty = async (req, res) => {
                 city: city || null,
                 province: province || null,
                 postalCode: postalCode || null,
-                ownerId: ownerId ? parseInt(ownerId) : null
+                owners: {
+                    connect: req.body.ownerIds && Array.isArray(req.body.ownerIds)
+                        ? req.body.ownerIds.map(id => ({ id: parseInt(id) }))
+                        : (ownerId ? [{ id: parseInt(ownerId) }] : [])
+                }
             },
-            include: { units: true, owner: true }
+            include: { units: true, owners: true }
         });
 
         res.json({
@@ -308,10 +335,11 @@ exports.createProperty = async (req, res) => {
             street: property.street,
             city: property.city,
             province: property.province,
+            province: property.province,
             postalCode: property.postalCode,
             units: property.units.length,
             status: property.status,
-            ownerName: property.owner?.name
+            ownerNames: property.owners?.map(o => o.name).join(', ') || 'No Owner'
         });
     } catch (error) {
         console.error('Create Property Error:', error);
@@ -343,19 +371,27 @@ exports.updateProperty = async (req, res) => {
             if (postalCode) fullAddress += ` ${postalCode}`;
         }
 
+        const updateData = {
+            name,
+            status,
+            address: fullAddress,
+            civicNumber: civicNumber !== undefined ? civicNumber : currentProperty.civicNumber,
+            street: street !== undefined ? street : currentProperty.street,
+            city: city !== undefined ? city : currentProperty.city,
+            province: province !== undefined ? province : currentProperty.province,
+            postalCode: postalCode !== undefined ? postalCode : currentProperty.postalCode
+        };
+
+        if (req.body.ownerIds && Array.isArray(req.body.ownerIds)) {
+            updateData.owners = {
+                set: req.body.ownerIds.map(id => ({ id: parseInt(id) }))
+            };
+        }
+
         // Update property name, status and address fields
         await prisma.property.update({
             where: { id: parseInt(id) },
-            data: {
-                name,
-                status,
-                address: fullAddress,
-                civicNumber: civicNumber || currentProperty.civicNumber,
-                street: street || currentProperty.street,
-                city: city || currentProperty.city,
-                province: province || currentProperty.province,
-                postalCode: postalCode || currentProperty.postalCode
-            }
+            data: updateData
         });
 
         // Note: Units are no longer auto-created or deleted based on count
@@ -644,26 +680,8 @@ exports.createOwner = async (req, res) => {
             }
         }
 
-        // SMS Logic
-        let smsResult = { success: true, skipped: true };
-        if (phone && email) {
-            const message = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
-            console.log('Attempting to send SMS to:', phone);
-            smsResult = await smsService.sendSMS(phone, message);
-        }
-
-        // Email Logic
-        if (email) {
-            const emailSubject = 'Welcome to Property Management - Your Login Credentials';
-            const emailText = `Welcome to Property Management! \n\nYour login credentials: \nEmail: ${email} \nPassword: ${password} \n\nLogin here: ${process.env.FRONTEND_URL || 'https://property-n.kiaantechnology.com'}/login`;
-
-            // Non-blocking fire and forget
-            emailService.sendEmail(email, emailSubject, emailText)
-                .then(res => console.log('[createOwner] Email send attempted:', res.success ? 'Success' : 'Failed'))
-                .catch(err => console.error('[createOwner] Email send unhandled error:', err));
-        }
-
-        res.status(201).json({ ...newOwner, smsResult });
+        // Manual invite logic only - Removed auto SMS/Email triggers
+        res.status(201).json(newOwner);
     } catch (error) {
         console.error('Create Owner Error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -732,11 +750,9 @@ exports.deleteOwner = async (req, res) => {
         const id = parseInt(req.params.id);
 
         await prisma.$transaction(async (tx) => {
-            // 1. Disconnect properties
-            await tx.property.updateMany({
-                where: { ownerId: id },
-                data: { ownerId: null }
-            });
+            // 1. Join table entries and property ownership are handled implicitly by many-to-many refactor.
+            // But we might want to explicitly disconnect properties if they were linked via ownerId before (handled by migration)
+            // No manual join table update needed for implicit rels unless specifically requested.
 
             // 2. Unlink from company (if primary contact)
             await tx.company.updateMany({
@@ -772,5 +788,103 @@ exports.deleteOwner = async (req, res) => {
     } catch (error) {
         console.error('Delete Owner Error:', error);
         res.status(500).json({ message: 'Error deleting owner', error: error.message });
+    }
+};
+exports.sendInvite = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const { methods } = req.body; // ['email', 'sms']
+
+        if (isNaN(id)) {
+            return res.status(400).json({ message: 'Invalid owner ID' });
+        }
+
+        const recipientUser = await prisma.user.findUnique({
+            where: { id },
+            include: { company: true }
+        });
+
+        if (!recipientUser) {
+            return res.status(404).json({ message: 'Owner not found' });
+        }
+
+        // Generate Password if missing
+        let plainPassword = null;
+        let hashedPassword = null;
+
+        // Always generate a new random password for invites to ensure it's fresh
+        plainPassword = Math.floor(100000 + Math.random() * 900000).toString();
+        hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+        const inviteToken = crypto.randomBytes(32).toString('hex');
+        const inviteExpires = new Date();
+        inviteExpires.setDate(inviteExpires.getDate() + 7);
+
+        // Update recipient with new credentials/token
+        const updatedUser = await prisma.user.update({
+            where: { id: recipientUser.id },
+            data: {
+                password: hashedPassword,
+                inviteToken,
+                inviteExpires
+            }
+        });
+
+        const results = {
+            email: { attempted: false, success: false },
+            sms: { attempted: false, success: false }
+        };
+
+        const loginUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const inviteLink = `${loginUrl}/login?token=${inviteToken}`;
+
+        let welcomeMsg = `Welcome to Property Management! \n\nYour login credentials for the portal: \nEmail: ${updatedUser.email}`;
+        if (plainPassword) {
+            welcomeMsg += ` \nPassword: ${plainPassword}`;
+        }
+        welcomeMsg += ` \n\nAccess your portal here: ${inviteLink}`;
+
+        if (methods.includes('email')) {
+            results.email.attempted = true;
+            if (!updatedUser.email) {
+                results.email.error = 'No email on file';
+            } else {
+                try {
+                    const eRes = await emailService.sendEmail(updatedUser.email, 'Welcome - Your Owner Portal Access', welcomeMsg);
+                    results.email.success = eRes.success;
+                    if (!eRes.success) results.email.error = eRes.error;
+                } catch (err) {
+                    results.email.error = err.message;
+                }
+            }
+        }
+
+        if (methods.includes('sms')) {
+            results.sms.attempted = true;
+            if (!updatedUser.phone) {
+                results.sms.error = 'No phone number on file';
+            } else {
+                try {
+                    const sRes = await smsService.sendSMS(updatedUser.phone, welcomeMsg);
+                    results.sms.success = sRes.success;
+                    if (!sRes.success) results.sms.error = sRes.error;
+                } catch (err) {
+                    results.sms.error = err.message;
+                }
+            }
+        }
+
+        res.json({
+            success: true,
+            message: 'Invitations processed',
+            data: {
+                recipient: updatedUser.email,
+                results,
+                inviteLink
+            }
+        });
+    } catch (error) {
+        console.error('Send Invite Error:', error);
+        res.status(500).json({ message: 'Server error while sending invite' });
     }
 };
