@@ -114,7 +114,9 @@ async function main() {
           postalCode: "J8E 2G5",
           address: `${civicNumber} Allée Marthe-Rivard, Mont-Tremblant, Quebec J8E 2G5`,
           status: "Active",
-          ownerId: owner.id,
+          owners: {
+            connect: { id: owner.id },
+          },
         },
       });
 
