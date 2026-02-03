@@ -514,7 +514,7 @@ exports.createLease = catchAsync(async (req, res, next) => {
             // Check for EXISTING Active lease in FULL_UNIT mode (blocking only if NOT a company lease)
             const activeFullLease = unit.leases.find(l =>
                 l.status === 'Active' &&
-                (unit.rentalMode === 'FULL_UNIT' || !unit.rentalMode) &&
+                l.leaseType === 'FULL_UNIT' &&
                 l.tenant.type !== 'COMPANY'
             );
             if (activeFullLease) {
@@ -522,7 +522,11 @@ exports.createLease = catchAsync(async (req, res, next) => {
             }
 
             // Check for DRAFT full unit leases for DIFFERENT tenants
-            const otherDraftFullLease = unit.leases.find(l => l.status === 'DRAFT' && (unit.rentalMode === 'FULL_UNIT' || !unit.rentalMode) && l.tenantId !== tId);
+            const otherDraftFullLease = unit.leases.find(l =>
+                l.status === 'DRAFT' &&
+                l.leaseType === 'FULL_UNIT' &&
+                l.tenantId !== tId
+            );
             if (otherDraftFullLease) {
                 throw new AppError('Cannot lease bedroom: This unit is already reserved as a full unit for another tenant.', 400);
             }
