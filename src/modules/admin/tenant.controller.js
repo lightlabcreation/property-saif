@@ -120,6 +120,8 @@ exports.getAllTenants = async (req, res) => {
                 property: activeLease?.unit?.property?.name || 'No Property',
                 unit: activeLease?.unit?.name || 'No Unit',
                 leaseStatus: activeLease ? activeLease.status : 'Inactive',
+                activeLeaseRole: activeLease ? (t.leases.find(l => l.id === activeLease.id) ? 'TENANT' : 'RESIDENT') : null,
+                leaseType: activeLease?.leaseType || null,
                 leaseStartDate: activeLease?.startDate || null,
                 leaseEndDate: activeLease?.endDate || null,
                 rentAmount: activeLease?.monthlyRent || 0,

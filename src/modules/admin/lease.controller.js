@@ -44,10 +44,29 @@ exports.getLeaseHistory = async (req, res) => {
             orderBy: { createdAt: 'desc' }
         });
 
+        // Collect all unique tenant emails to check communication logs efficiently
+        const tenantEmails = [...new Set(leases.map(l => l.tenant.email).filter(Boolean))];
+
+        // Fetch logs for these tenants
+        const sentLogs = await prisma.communicationLog.findMany({
+            where: {
+                recipient: { in: tenantEmails },
+                eventType: 'TENANT_CREATION_CREDENTIALS',
+                status: 'Sent'
+            },
+            select: { recipient: true }
+        });
+
+        const sentEmailSet = new Set(sentLogs.map(log => log.recipient));
+
         const formatted = leases.map(l => {
             const primaryName = l.tenant.name || `${l.tenant.firstName || ''} ${l.tenant.lastName || ''}`.trim();
             const residentNames = l.residents.map(r => r.name || `${r.firstName || ''} ${r.lastName || ''}`.trim());
             const allTenants = [primaryName, ...residentNames].filter(Boolean).join(', ');
+
+            // Check if credentials were sent to this tenant's email
+            // Use l.tenant.email directly. If no email, they can't have received them.
+            const isCredentialsSent = l.tenant.email && sentEmailSet.has(l.tenant.email);
 
             return {
                 id: l.id,
@@ -69,6 +88,7 @@ exports.getLeaseHistory = async (req, res) => {
                 startDate: l.startDate ? l.startDate.toISOString().substring(0, 10) : '',
                 endDate: l.endDate ? l.endDate.toISOString().substring(0, 10) : '',
                 monthlyRent: l.monthlyRent || 0,
+                isCredentialsSent: isCredentialsSent,
                 tenantId: l.tenantId
             };
         });
@@ -562,11 +582,12 @@ exports.createLease = catchAsync(async (req, res, next) => {
 
         // UPDATE STATUSES BASED ON LEASE TYPE
         if (isFullUnitLease) {
-            // Full Unit Lease: Mark unit as Fully Booked and all bedrooms as Occupied
+            // Full Unit Lease: Mark unit as Fully Booked (if Individual) or Occupied (if Company)
+            const isCompanyLease = targetTenant.type === 'COMPANY';
             await tx.unit.update({
                 where: { id: uId },
                 data: {
-                    status: 'Fully Booked',
+                    status: isCompanyLease ? 'Occupied' : 'Fully Booked',
                     rentalMode: 'FULL_UNIT'
                 }
             });
@@ -591,25 +612,51 @@ exports.createLease = catchAsync(async (req, res, next) => {
                 data: { status: 'Occupied' }
             });
 
-            // Update unit rental mode to BEDROOM_WISE
-            await tx.unit.update({
-                where: { id: uId },
-                data: { rentalMode: 'BEDROOM_WISE' }
-            });
+            // Update unit rental mode to BEDROOM_WISE (if not already set by a company lease)
+            if (unit.rentalMode !== 'FULL_UNIT') {
+                await tx.unit.update({
+                    where: { id: uId },
+                    data: { rentalMode: 'BEDROOM_WISE' }
+                });
+            }
 
-            // Check if all bedrooms are now occupied
+            // Check if all bedrooms are now occupied BY INDIVIDUAL RESIDENT LEASES if it's a company-leased unit
             const updatedUnit = await tx.unit.findUnique({
                 where: { id: uId },
-                include: { bedroomsList: true }
+                include: {
+                    bedroomsList: true,
+                    leases: {
+                        where: { status: 'Active', leaseType: 'BEDROOM' }
+                    }
+                }
             });
+
+            const hasCompanyLease = unit.leases.some(l => l.status === 'Active' && l.tenant.type === 'COMPANY');
             const allOccupied = updatedUnit.bedroomsList.every(b => b.status === 'Occupied');
 
             if (allOccupied) {
-                // All bedrooms occupied, mark unit as Fully Booked
-                await tx.unit.update({
-                    where: { id: uId },
-                    data: { status: 'Fully Booked' }
-                });
+                if (hasCompanyLease) {
+                    // If it's a company unit, only mark Fully Booked if all bedrooms have specific resident leases
+                    const residentLeaseCount = updatedUnit.leases.length;
+                    if (residentLeaseCount === updatedUnit.bedroomsList.length) {
+                        await tx.unit.update({
+                            where: { id: uId },
+                            data: { status: 'Fully Booked' }
+                        });
+                    } else {
+                        // Still some rooms without individual residents assigned
+                        await tx.unit.update({
+                            where: { id: uId },
+                            data: { status: 'Occupied' }
+                        });
+                    }
+                } else {
+                    // Individual bedroom-wise leasing: all rooms occupied = Fully Booked
+                    await tx.unit.update({
+                        where: { id: uId },
+                        data: { status: 'Fully Booked' }
+                    });
+                }
             } else {
                 // Some bedrooms still vacant, mark as Occupied
                 await tx.unit.update({
@@ -758,7 +805,7 @@ const processOnboardingInvitations = async (tenantId, coTenantIds = [], methods 
             const sendResults = { email: false, sms: false };
 
             if (methods.includes('email') && updatedUser.email) {
-                const eRes = await emailService.sendEmail(updatedUser.email, 'Welcome - Your Portal Access', welcomeMsg);
+                const eRes = await emailService.sendEmail(updatedUser.email, 'Welcome - Your Portal Access', welcomeMsg, { recipientId: user.id });
                 sendResults.email = eRes.success;
             }
 
@@ -841,5 +888,29 @@ exports.getUnitsWithTenants = async (req, res) => {
     } catch (error) {
         console.error('Get Units With Tenants Error:', error);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// POST /api/admin/leases/:id/send-credentials
+exports.sendCredentials = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const lease = await prisma.lease.findUnique({
+            where: { id },
+            include: { tenant: true }
+        });
+
+        if (!lease) return res.status(404).json({ message: 'Lease not found' });
+
+        const result = await processOnboardingInvitations(lease.tenantId);
+
+        res.json({
+            success: true,
+            message: result.status === 'Sent' ? 'Credentials sent successfully' : 'Failed to send credentials',
+            details: result
+        });
+    } catch (e) {
+        console.error('Send Credentials Error:', e);
+        res.status(500).json({ message: 'Error sending credentials' });
     }
 };

@@ -7,6 +7,7 @@ router.post("/", leaseController.createLease);
 router.get("/units-with-tenants", leaseController.getUnitsWithTenants);
 router.get("/active/:unitId", leaseController.getActiveLease);
 router.post("/:id/activate", leaseController.activateLease);
+router.post("/:id/send-credentials", leaseController.sendCredentials);
 router.put("/:id", leaseController.updateLease);
 router.delete("/:id", leaseController.deleteLease);
 

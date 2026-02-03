@@ -24,7 +24,11 @@ exports.getAllUnits = async (req, res) => {
                         select: {
                             id: true,
                             status: true,
-                            tenant: { select: { type: true } }
+                            tenant: { select: { type: true } },
+                            startDate: true,
+                            endDate: true,
+                            monthlyRent: true,
+                            securityDeposit: true
                         }
                     }
                 },
@@ -56,7 +60,9 @@ exports.getAllUnits = async (req, res) => {
                 bedrooms: u.bedrooms,
                 rentalMode: u.rentalMode,
                 activeLeaseCount: u.leases ? u.leases.length : 0,
+                activeLeaseCount: u.leases ? u.leases.length : 0,
                 hasCompanyLease: u.leases ? u.leases.some(l => l.tenant.type === 'COMPANY') : false,
+                companyLeaseDetails: u.leases ? u.leases.find(l => l.tenant.type === 'COMPANY') : null,
                 draftLeaseCount: 0, // Simplified
                 activeLeases: u.leases ? u.leases.length : 0
             };
@@ -394,6 +400,11 @@ exports.getVacantBedrooms = async (req, res) => {
                                     status: 'Active',
                                     tenant: { type: 'COMPANY' }
                                 }
+                            }
+                        },
+                        leases: {
+                            none: {
+                                status: 'Active'
                             }
                         }
                     }
