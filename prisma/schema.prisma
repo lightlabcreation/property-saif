@@ -42,7 +42,7 @@ model User {
   leases            Lease[]            @relation("TenantLeases")
   receivedMessages  Message[]          @relation("ReceivedMessages")
   sentMessages      Message[]          @relation("SentMessages")
-  properties        Property[]         @relation("ownerProperties")
+  properties        Property[]         @relation("ownerproperties")
   refreshTokens     RefreshToken[]
   refundAdjustments RefundAdjustment[]
   tickets           Ticket[]
@@ -114,7 +114,7 @@ model Property {
   street           String?
   documents        Document[]
   maintenanceTasks MaintenanceTask[]
-  owners           User[]            @relation("ownerProperties")
+  owners           User[]            @relation("ownerproperties")
   company          Company?          @relation("CompanyProperties", fields: [companyId], references: [id])
   units            Unit[]
 
