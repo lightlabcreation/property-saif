@@ -14,6 +14,31 @@ try {
 }
 
 /**
+ * Helper to ensure E.164 format for US/Canada
+ * @param {string} phone 
+ * @returns {string} E.164 formatted phone number
+ */
+const normalizePhoneNumber = (phone) => {
+    if (!phone) return phone;
+
+    // 1. Remove all non-numeric characters (parentheses, dashes, spaces)
+    const digits = phone.replace(/\D/g, '');
+
+    // 2. Format based on length
+    // If 10 digits (e.g. 4165551234), add +1 -> +14165551234
+    if (digits.length === 10) {
+        return `+1${digits}`;
+    }
+    // If 11 digits starting with 1 (e.g. 14165551234), add + -> +14165551234
+    if (digits.length === 11 && digits.startsWith('1')) {
+        return `+${digits}`;
+    }
+
+    // Otherwise return original (assumed already correct or international) - ensure it has + if seemingly valid
+    return phone.startsWith('+') ? phone : `+${phone}`;
+};
+
+/**
  * Send SMS to a phone number
  * @param {string} to - The recipient's phone number (E.164 format e.g., +15550001111)
  * @param {string} message - The message content
@@ -26,13 +51,15 @@ exports.sendSMS = async (to, message) => {
     }
 
     try {
-        console.log(`Sending SMS to ${to}...`);
+        const formattedTo = normalizePhoneNumber(to);
+        console.log(`Sending SMS to ${formattedTo}...`);
+
         const result = await client.messages.create({
             body: message,
             from: TWILIO_PHONE_NUMBER,
-            to,
+            to: formattedTo,
         });
-        console.log(`SMS sent successfully to ${to}. SID: ${result.sid}`);
+        console.log(`SMS sent successfully to ${formattedTo}. SID: ${result.sid}`);
         return { success: true, sid: result.sid, result };
     } catch (error) {
         console.error(`Error sending SMS to ${to}:`, error);
@@ -55,20 +82,21 @@ exports.sendBulkSMS = async (recipients, message) => {
     const results = [];
 
     for (let i = 0; i < recipients.length; i++) {
-        const to = recipients[i];
+        const originalTo = recipients[i];
+        const formattedTo = normalizePhoneNumber(originalTo);
 
         try {
-            console.log(`Sending bulk SMS ${i + 1}/${recipients.length} to ${to}...`);
+            console.log(`Sending bulk SMS ${i + 1}/${recipients.length} to ${formattedTo}...`);
             const result = await client.messages.create({
                 body: message,
                 from: TWILIO_PHONE_NUMBER,
-                to,
+                to: formattedTo,
             });
-            console.log(`SMS sent successfully to ${to}. SID: ${result.sid}`);
-            results.push({ to, success: true, sid: result.sid });
+            console.log(`SMS sent successfully to ${formattedTo}. SID: ${result.sid}`);
+            results.push({ to: originalTo, success: true, sid: result.sid });
         } catch (error) {
-            console.error(`Error sending SMS to ${to}:`, error);
-            results.push({ to, success: false, error: error.message, code: error.code });
+            console.error(`Error sending SMS to ${formattedTo}:`, error);
+            results.push({ to: originalTo, success: false, error: error.message, code: error.code });
         }
 
         // Throttle: Wait 1 second between sends to respect Twilio rate limits
