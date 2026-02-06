@@ -4,7 +4,7 @@ const prisma = require('./src/config/prisma');
 
 async function sendOneOffEmail() {
     console.log('--- One-off SendGrid Verification ---');
-    const to = 'pulkitshar611@gmail.com';
+    const to = '';
     const subject = 'SendGrid Verification - Property Management';
     const text = 'Hello, this is a test email to verify that the SendGrid integration is working correctly for your account.';
 

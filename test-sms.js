@@ -10,7 +10,7 @@ async function testSMS() {
 
     // Test 1: Send a test SMS
     console.log('📤 Test 1: Sending test SMS...');
-    const testPhone = '+14388010131'; // Replace with your test phone number
+    const testPhone = ''; // Replace with your test phone number
     const testMessage = 'Hello! This is a test message from your Property Management System.';
 
     const result = await smsService.sendSMS(testPhone, testMessage);

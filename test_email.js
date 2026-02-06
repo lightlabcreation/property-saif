@@ -6,7 +6,7 @@ async function testEmail() {
     console.log('Using API Key:', process.env.SENDGRID_API_KEY ? 'Present (Hidden)' : 'MISSING');
     console.log('Using Sender:', process.env.SENDGRID_SENDER_EMAIL);
 
-    const testRecipient = 'Administration@campushabitations.com'; // Testing by sending to oneself or a verified address
+    const testRecipient = ''; // Testing by sending to oneself or a verified address
     const subject = 'Test Email from Property Management System';
     const text = 'This is a test email to verify the SendGrid integration. If you receive this, the integration is working correctly.';
 

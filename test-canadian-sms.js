@@ -15,11 +15,7 @@ async function testCanadianSMS() {
     console.log('-'.repeat(60));
 
     const testNumbers = [
-        '4165551234',           // 10 digits
-        '14165551234',          // 11 digits with 1
-        '+14165551234',         // E.164 format
-        '(416) 555-1234',       // Formatted
-        '416-555-1234',         // Dashed
+        // Dashed
     ];
 
     console.log('Testing Canadian number formats:');
@@ -40,23 +36,6 @@ async function testCanadianSMS() {
     console.log('-'.repeat(60));
     console.log('⚠️  Skipping actual SMS send to avoid charges');
     console.log('To test real SMS, uncomment the code below and add a test number');
-
-    /*
-    // Uncomment to test real SMS sending
-    const testPhone = '+14165551234'; // Replace with real Canadian number
-    const testMessage = 'Test message from Property Management System';
-    
-    console.log(`Sending test SMS to ${testPhone}...`);
-    const result = await smsService.sendSMS(testPhone, testMessage);
-    
-    if (result.success) {
-        console.log('✅ SMS sent successfully!');
-        console.log(`   SID: ${result.sid}`);
-    } else {
-        console.log('❌ SMS failed to send');
-        console.log(`   Error: ${result.error}`);
-    }
-    */
 
     // Test 4: Message content formatting
     console.log('\n💬 Test 4: Message Content Formatting');
