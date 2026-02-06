@@ -464,8 +464,8 @@ exports.createLease = catchAsync(async (req, res, next) => {
             throw new AppError('Tenant not found', 404);
         }
 
-        if (targetTenant.type === 'RESIDENT' && !targetTenant.parentId) {
-            throw new AppError('Residents cannot hold leases without a responsible billable tenant assigned.', 400);
+        if (targetTenant.type === 'RESIDENT') {
+            throw new AppError('Residents (Occupants) cannot hold direct leases. Please assign them as occupants in the Tenant module instead.', 400);
         }
 
         // Fetch unit with bedrooms and existing leases
@@ -763,7 +763,10 @@ const processOnboardingInvitations = async (tenantId, coTenantIds = [], methods 
         if (tenantIds.length === 0) return { status: 'Skipped', message: 'No tenants to invite' };
 
         const users = await prisma.user.findMany({
-            where: { id: { in: tenantIds.map(id => parseInt(id)) } }
+            where: {
+                id: { in: tenantIds.map(id => parseInt(id)) },
+                type: { not: 'RESIDENT' } // SKIP RESIDENTS
+            }
         });
 
         const results = {

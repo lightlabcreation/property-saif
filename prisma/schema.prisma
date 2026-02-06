@@ -404,6 +404,9 @@ model Message {
   isRead     Boolean  @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+  smsSid     String?  // Twilio message SID
+  smsStatus  String?  // SMS delivery status: sent, delivered, failed, etc.
+  sentVia    String   @default("app") // Channel: app, sms, or both
   receiver   User     @relation("ReceivedMessages", fields: [receiverId], references: [id], map: "Message_receiverId_fkey")
   sender     User     @relation("SentMessages", fields: [senderId], references: [id], map: "Message_senderId_fkey")
 

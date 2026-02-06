@@ -47,7 +47,13 @@ exports.getAllTenants = async (req, res) => {
                         }
                     }
                 },
-                parent: true,
+                parent: {
+                    include: {
+                        leases: {
+                            where: { status: { in: ['Active', 'DRAFT'] } }
+                        }
+                    }
+                },
                 companyContacts: true,
                 residentLease: {
                     include: {
@@ -61,42 +67,44 @@ exports.getAllTenants = async (req, res) => {
             }
         });
 
-        const formatted = tenants.map(t => {
-            // Find active lease first, then fall back to DRAFT
-            // Check BOTH primary leases and the residentLease (co-tenant)
-            // NEW: Also check residents' leases to inherit status for parents
+        const sortedTenants = [...tenants].sort((a, b) => b.id - a.id);
+
+        // Fetch all units and properties into a map for fast lookup of resident assignments
+        const units = await prisma.unit.findMany({ include: { property: true } });
+        const unitMap = new Map(units.map(u => [u.id, u]));
+
+        const formatted = sortedTenants.map(t => {
+            // Find active lease first
             let activeLease = t.leases.find(l => l.status === 'Active') ||
                 (t.residentLease?.status === 'Active' ? t.residentLease : null) ||
                 t.leases.find(l => l.status === 'DRAFT') ||
                 (t.residentLease?.status === 'DRAFT' ? t.residentLease : null);
 
-            // Inherit from residents if parent has no active lease
-            if (!activeLease && t.residents?.length > 0) {
-                const residentWithLease = t.residents.find(r => {
-                    // Check residentLease (co-tenant)
-                    const hasResidentLease = r.residentLease?.status === 'Active' || r.residentLease?.status === 'DRAFT';
-                    // Check primary leases (if resident is primary signer)
-                    const hasPrimaryLease = r.leases?.some(l => l.status === 'Active' || l.status === 'DRAFT');
+            // If no lease, check if they are a resident assigned to a unit
+            let propName = activeLease?.unit?.property?.name || 'No Property';
+            let uName = activeLease?.unit?.name || 'No Unit';
+            let lStatus = activeLease ? activeLease.status : 'Inactive';
 
-                    return hasResidentLease || hasPrimaryLease;
-                });
+            if (t.type === 'RESIDENT' && t.unitId) {
+                const assignedUnit = unitMap.get(t.unitId);
+                if (assignedUnit) {
+                    propName = assignedUnit.property?.name || 'No Property';
+                    uName = assignedUnit.unitNumber || assignedUnit.name || 'No Unit';
 
-                if (residentWithLease) {
-                    // Prioritize active statuses for the parent display
-                    if (residentWithLease.residentLease?.status === 'Active' || residentWithLease.residentLease?.status === 'DRAFT') {
-                        activeLease = residentWithLease.residentLease;
-                    } else if (residentWithLease.leases?.length > 0) {
-                        activeLease = residentWithLease.leases.find(l => l.status === 'Active') || residentWithLease.leases[0];
-                    }
+                    // Validate: Resident is Active ONLY if the Parent has an active lease for this specific unit
+                    const parentHasLease = t.parent?.leases?.some(l => l.unitId === t.unitId && l.status === 'Active');
+                    lStatus = parentHasLease ? 'Active' : 'Inactive';
                 }
             }
 
-            // Display logic: For COMPANY type, show "Company Name (Contact Name)"
-            let displayName = t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim();
-
-            if (t.type === 'COMPANY' && t.companyName) {
-                displayName = t.companyName;
+            // Inherit from residents if parent has no active lease (UI helper)
+            if (!activeLease && t.residents?.length > 0) {
+                const residentWithLease = t.residents.find(r => r.residentLease?.status === 'Active' || r.leases?.some(l => l.status === 'Active'));
+                if (residentWithLease) lStatus = 'Active';
             }
+
+            let displayName = t.name || `${t.firstName || ''} ${t.lastName || ''}`.trim();
+            if (t.type === 'COMPANY' && t.companyName) displayName = t.companyName;
 
             return {
                 id: t.id,
@@ -105,33 +113,20 @@ exports.getAllTenants = async (req, res) => {
                 lastName: t.lastName,
                 type: t.type || 'Individual',
                 companyName: t.companyName,
-                companyDetails: t.companyDetails,
                 email: t.email,
                 phone: t.phone,
-                street: t.street,
-                street2: t.street2,
-                city: t.city,
-                state: t.state,
-                postalCode: t.postalCode,
-                country: t.country,
                 propertyId: activeLease?.unit?.propertyId || t.buildingId || null,
                 unitId: activeLease?.unitId || t.unitId || null,
                 bedroomId: activeLease?.bedroomId || t.bedroomId || null,
-                property: activeLease?.unit?.property?.name || 'No Property',
-                unit: activeLease?.unit?.name || 'No Unit',
-                leaseStatus: activeLease ? activeLease.status : 'Inactive',
+                property: propName,
+                unit: uName,
+                leaseStatus: lStatus,
                 activeLeaseRole: activeLease ? (t.leases.find(l => l.id === activeLease.id) ? 'TENANT' : 'RESIDENT') : null,
-                leaseType: activeLease?.leaseType || null,
-                leaseStartDate: activeLease?.startDate || null,
-                leaseEndDate: activeLease?.endDate || null,
                 rentAmount: activeLease?.monthlyRent || 0,
                 insurance: t.insurances,
                 documents: t.documents,
-                residents: t.residents,
-                companyContacts: t.companyContacts,
                 parentId: t.parentId,
                 parentName: t.parent ? t.parent.name || `${t.parent.firstName || ''} ${t.parent.lastName || ''}`.trim() : null,
-                inviteToken: t.inviteToken,
                 hasPortalAccess: !!t.password
             };
         });
@@ -149,23 +144,34 @@ exports.getTenantById = async (req, res) => {
         const { id } = req.params;
         const tenantId = parseInt(id);
 
-        const tenant = await prisma.user.findUnique({
+        let tenant = await prisma.user.findUnique({
             where: { id: tenantId },
             include: {
                 leases: {
-                    include: { unit: true }
+                    include: { unit: { include: { property: true } } }
                 },
                 insurances: true,
                 documents: true, // Direct ownership documents
                 residents: true,
                 residentLease: {
-                    include: { unit: true }
+                    include: { unit: { include: { property: true } } }
                 },
                 parent: true
             }
         });
 
         if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
+
+        // If no lease, check for direct assignment (for Residents)
+        if (tenant.unitId) {
+            const directUnit = await prisma.unit.findUnique({
+                where: { id: tenant.unitId },
+                include: { property: true }
+            });
+            if (directUnit) {
+                tenant.assignedUnit = directUnit;
+            }
+        }
 
         // Fetch documents linked via DocumentLink (entityType="USER", entityId=tenantId)
         const linkedDocuments = await prisma.document.findMany({
@@ -292,7 +298,7 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 throw err;
             }
 
-            // Residents inherit from parent ALWAYS if not provided
+            // Residents inherit location from parent ALWAYS if not provided
             const parent = await prisma.user.findUnique({
                 where: { id: sanitizedParentId },
                 include: {
@@ -304,8 +310,8 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
                 sanitizedUnitId = sanitizedUnitId || parent.unitId;
                 sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
-                // Important: Link to parent's active lease
-                req.body.leaseId = req.body.leaseId || parent.leases[0]?.id;
+                // STOPS: Linking resident to parent's lease. Residents should be occupants only.
+                // req.body.leaseId = null; 
             }
         }
 
@@ -333,7 +339,7 @@ exports.createTenant = catchAsync(async (req, res, next) => {
                 unitId: sanitizedUnitId,
                 bedroomId: sanitizedBedroomId,
                 parentId: sanitizedParentId,
-                leaseId: req.body.leaseId || null, // Link to lease
+                leaseId: normalizedType === 'RESIDENT' ? null : (req.body.leaseId || null), // Residents never have leases
                 password: hashedPassword,
                 inviteToken,
                 inviteExpires,
@@ -566,7 +572,7 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
                 sanitizedBuildingId = sanitizedBuildingId || parent.buildingId;
                 sanitizedUnitId = sanitizedUnitId || parent.unitId;
                 sanitizedBedroomId = sanitizedBedroomId || parent.bedroomId;
-                sanitizedLeaseId = sanitizedLeaseId || parent.leases[0]?.id;
+                sanitizedLeaseId = null; // Residents never assigned to leases
             }
         }
 
@@ -661,7 +667,7 @@ exports.updateTenant = catchAsync(async (req, res, next) => {
         }
     }
 
-    if (newUnitId) {
+    if (newUnitId && normalizedType !== 'RESIDENT') {
         const currentLease = await prisma.lease.findFirst({
             where: {
                 tenantId: id,
@@ -761,12 +767,12 @@ exports.sendInvite = catchAsync(async (req, res, next) => {
         throw new AppError('Tenant not found', 404);
     }
 
-    // Determine recipient: parent for residents, otherwise the tenant themselves
-    const recipientUser = tenant.type === 'RESIDENT' ? tenant.parent : tenant;
-
-    if (!recipientUser) {
-        throw new AppError('Recipient user not found (Resident may be missing responsible party)', 400);
+    // Block invitations for residents
+    if (tenant.type === 'RESIDENT') {
+        throw new AppError('Residents do not have portal access and cannot be invited.', 400);
     }
+
+    const recipientUser = tenant;
 
     let password = null;
     let hashedPassword = undefined;

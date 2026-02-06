@@ -140,27 +140,108 @@ exports.sendComposeEmail = async (req, res) => {
 // GET /api/admin/communication
 exports.getHistory = async (req, res) => {
     try {
-        const history = await prisma.communicationLog.findMany({
-            include: { recipientUser: true },
-            orderBy: { timestamp: 'desc' }
-        });
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
 
-        const formatted = history.map(item => ({
-            id: item.id,
-            date: item.timestamp.toISOString().replace('T', ' ').substring(0, 16),
-            recipient: item.recipientUser?.name || item.recipient,
-            channel: item.channel, // Email/SMS
-            eventType: item.eventType,
-            summary: item.content?.substring(0, 100) || 'No content',
-            status: item.status,
-            relatedEntity: item.relatedEntity,
-            entityId: item.entityId
+        const [history, total] = await Promise.all([
+            prisma.communicationLog.findMany({
+                include: {
+                    recipientUser: {
+                        select: {
+                            name: true,
+                            firstName: true,
+                            lastName: true,
+                            email: true,
+                            phone: true
+                        }
+                    }
+                },
+                orderBy: { timestamp: 'desc' },
+                skip,
+                take: limit
+            }),
+            prisma.communicationLog.count()
+        ]);
+
+        // Resolve names for phone numbers/emails
+        const formatted = await Promise.all(history.map(async (item) => {
+            let recipientDisplay = item.recipient;
+
+            // 1. If we have a connected user, use their name
+            if (item.recipientUser) {
+                const user = item.recipientUser;
+                recipientDisplay = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email || user.phone || item.recipient;
+            }
+            // 2. If no connected user, but recipient looks like a phone, search by phone
+            else if (item.recipient && (item.recipient.startsWith('+') || /^\d{10,15}$/.test(item.recipient.replace(/\D/g, '')))) {
+                const user = await prisma.user.findFirst({
+                    where: { phone: item.recipient },
+                    select: { name: true, firstName: true, lastName: true }
+                });
+                if (user) {
+                    recipientDisplay = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+                }
+            }
+            // 3. If no connected user, but recipient looks like an email, search by email
+            else if (item.recipient && item.recipient.includes('@')) {
+                const user = await prisma.user.findFirst({
+                    where: { email: item.recipient },
+                    select: { name: true, firstName: true, lastName: true }
+                });
+                if (user) {
+                    recipientDisplay = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+                }
+            }
+
+            return {
+                id: item.id,
+                date: item.timestamp.toISOString().replace('T', ' ').substring(0, 16),
+                recipient: recipientDisplay,
+                eventType: item.eventType,
+                summary: item.content?.substring(0, 100) || 'No content'
+            };
         }));
 
-        res.json(formatted);
+        res.json({
+            logs: formatted,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (e) {
         console.error(e);
         res.status(500).json({ message: 'Server error' });
+    }
+};
+
+// DELETE /api/admin/communication/:id
+exports.deleteLog = async (req, res) => {
+    try {
+        await prisma.communicationLog.delete({
+            where: { id: parseInt(req.params.id) }
+        });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Failed to delete log' });
+    }
+};
+
+// POST /api/admin/communication/bulk-delete
+exports.bulkDeleteLogs = async (req, res) => {
+    try {
+        const { ids } = req.body;
+        await prisma.communicationLog.deleteMany({
+            where: { id: { in: ids } }
+        });
+        res.json({ success: true, deleted: ids.length });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: 'Failed to delete logs' });
     }
 };
 
@@ -176,25 +257,79 @@ exports.sendMessage = async (req, res) => {
 
         // Detect bulk SMS
         const isBulk = type === 'SMS' && (
-            recipient.toLowerCase().includes('all tenants') ||
-            recipient.toLowerCase().includes('all residents') ||
+            (typeof recipient === 'string' && (
+                recipient.toLowerCase().includes('all tenants') ||
+                recipient.toLowerCase().includes('all residents') ||
+                recipient.toLowerCase().includes('all owners')
+            )) ||
             Array.isArray(recipient)
         );
 
         if (type === 'SMS') {
             if (isBulk) {
-                // Fetch all tenant phone numbers
-                const tenants = await prisma.user.findMany({
-                    where: {
-                        role: 'TENANT',
-                        phone: { not: null }
-                    },
-                    select: { phone: true, name: true }
-                });
+                let users = [];
 
-                const phoneNumbers = tenants.map(t => t.phone).filter(p => p);
+                // Determine which users to fetch
+                if (Array.isArray(recipient)) {
+                    // Custom selection: fetch specific users by IDs
+                    users = await prisma.user.findMany({
+                        where: {
+                            id: { in: recipient },
+                            phone: { not: null }
+                        },
+                        select: { id: true, phone: true, name: true }
+                    });
+                } else if (recipient.toLowerCase().includes('all tenants')) {
+                    // All tenants
+                    users = await prisma.user.findMany({
+                        where: {
+                            role: 'TENANT',
+                            type: { not: 'RESIDENT' },
+                            phone: { not: null }
+                        },
+                        select: { id: true, phone: true, name: true }
+                    });
+                } else if (recipient.toLowerCase().includes('all residents')) {
+                    // All residents
+                    users = await prisma.user.findMany({
+                        where: {
+                            type: 'RESIDENT',
+                            phone: { not: null }
+                        },
+                        select: { id: true, phone: true, name: true }
+                    });
+                } else if (recipient.toLowerCase().includes('all owners')) {
+                    // All owners
+                    users = await prisma.user.findMany({
+                        where: {
+                            role: 'OWNER',
+                            phone: { not: null }
+                        },
+                        select: { id: true, phone: true, name: true }
+                    });
+                }
+
+                const phoneNumbers = users.map(u => u.phone).filter(p => p);
                 recipientCount = phoneNumbers.length;
 
+                // The following code block was provided in the instruction, but contains undefined variables
+                // (targetNumericId, userId, unreadCount) and a malformed return statement (}));).
+                // It also appears to be out of context for this specific function's logic (sending bulk SMS).
+                // To avoid introducing syntax errors or logical inconsistencies, this block is commented out.
+                // If this is intended for a different part of the code or requires context, please clarify.
+                /*
+                const lastMessage = await prisma.message.findFirst({
+                    where: {
+                        OR: [
+                            { senderId: targetNumericId, receiverId: userId },
+                            { senderId: userId, receiverId: targetNumericId }
+                        ]
+                    },
+                    orderBy: { createdAt: 'desc' }
+                });
+                return { ...recipient, unreadCount, lastMessage };
+                }));
+                */
                 if (phoneNumbers.length > 0) {
                     console.log(`Sending bulk SMS to ${phoneNumbers.length} recipients...`);
                     const bulkResults = await smsService.sendBulkSMS(phoneNumbers, message);
@@ -211,8 +346,12 @@ exports.sendMessage = async (req, res) => {
                         deliveryStatus = 'Partial';
                     }
 
-                    // Log each individual send
-                    for (const result of bulkResults) {
+                    // Log each individual send AND create chat message
+                    for (let i = 0; i < bulkResults.length; i++) {
+                        const result = bulkResults[i];
+                        const user = users[i]; // Get the corresponding user
+
+                        // Create communication log
                         await prisma.communicationLog.create({
                             data: {
                                 channel: 'SMS',
@@ -222,6 +361,25 @@ exports.sendMessage = async (req, res) => {
                                 status: result.success ? 'Sent' : 'Failed'
                             }
                         });
+
+                        // Create individual message in chat history (if user has an ID)
+                        if (user && user.id) {
+                            try {
+                                await prisma.message.create({
+                                    data: {
+                                        content: message,
+                                        senderId: req.user?.id || 1, // Admin ID
+                                        receiverId: user.id,
+                                        isRead: false,
+                                        smsSid: result.sid || null,
+                                        smsStatus: result.success ? 'sent' : 'failed',
+                                        sentVia: 'sms'
+                                    }
+                                });
+                            } catch (msgError) {
+                                console.error(`Failed to create message for user ${user.id}:`, msgError);
+                            }
+                        }
                     }
                 } else {
                     deliveryStatus = 'Failed';
@@ -281,9 +439,14 @@ exports.sendMessage = async (req, res) => {
             }
         }
 
+        // Convert recipient to string if it's an array (for database storage)
+        const recipientString = Array.isArray(recipient)
+            ? `Custom Selection (${recipient.length} recipients)`
+            : recipient;
+
         const newComm = await prisma.communication.create({
             data: {
-                recipient,
+                recipient: recipientString,
                 subject,
                 message,
                 type,

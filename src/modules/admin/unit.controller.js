@@ -193,8 +193,10 @@ exports.createUnit = async (req, res) => {
 exports.getUnitDetails = async (req, res) => {
     try {
         const { id } = req.params;
+        const uId = parseInt(id);
+
         const unit = await prisma.unit.findUnique({
-            where: { id: parseInt(id) },
+            where: { id: uId },
             include: {
                 property: true,
                 leases: {
@@ -208,6 +210,24 @@ exports.getUnitDetails = async (req, res) => {
         });
 
         if (!unit) return res.status(404).json({ message: 'Unit not found' });
+
+        // Fetch occupants separately
+        const occupants = await prisma.user.findMany({
+            where: {
+                unitId: uId,
+                role: 'TENANT',
+                type: 'RESIDENT'
+            },
+            select: {
+                id: true,
+                name: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+                bedroomId: true
+            }
+        });
 
         const activeLease = unit.leases.find(l => l.status === 'Active');
         const history = unit.leases.filter(l => l.status !== 'Active');
@@ -243,7 +263,8 @@ exports.getUnitDetails = async (req, res) => {
                 tenantName: h.tenant.name,
                 startDate: h.startDate,
                 endDate: h.endDate
-            }))
+            })),
+            occupants: occupants || []
         });
 
     } catch (error) {
@@ -382,15 +403,43 @@ exports.getVacantBedrooms = async (req, res) => {
     try {
         const propertyId = req.query.propertyId ? parseInt(req.query.propertyId) : undefined;
         const unitId = req.query.unitId ? parseInt(req.query.unitId) : undefined;
+        const includeId = req.query.includeId ? parseInt(req.query.includeId) : undefined;
 
-        // Build where clause for units
+        // 1. Find bedrooms already assigned to users (residents/occupants)
+        const usersWithBedrooms = await prisma.user.findMany({
+            where: { bedroomId: { not: null } },
+            select: { bedroomId: true }
+        });
+        const takenByUser = usersWithBedrooms.map(u => u.bedroomId);
+
+        // 2. Find bedrooms with active/draft individual leases
+        const activeBedroomLeases = await prisma.lease.findMany({
+            where: {
+                bedroomId: { not: null },
+                status: { in: ['Active', 'DRAFT'] }
+            },
+            select: { bedroomId: true }
+        });
+        const takenByLease = activeBedroomLeases.map(l => l.bedroomId);
+
+        // Combine all taken IDs
+        let takenIds = [...new Set([...takenByUser, ...takenByLease])];
+
+        // If editing, allow the current bedroom to remain in the list
+        if (includeId) {
+            takenIds = takenIds.filter(id => id !== includeId);
+        }
+
+        // Build where clause for units context
         const unitWhere = {};
         if (propertyId) unitWhere.propertyId = propertyId;
         if (unitId) unitWhere.id = unitId;
 
-        // Fetch all bedrooms with their unit and property info
+        // Fetch bedrooms that match the context AND are not in takenIds
         const bedrooms = await prisma.bedroom.findMany({
             where: {
+                id: { notIn: takenIds },
+                unit: unitWhere,
                 OR: [
                     { status: 'Vacant' },
                     {
@@ -401,15 +450,11 @@ exports.getVacantBedrooms = async (req, res) => {
                                     tenant: { type: 'COMPANY' }
                                 }
                             }
-                        },
-                        leases: {
-                            none: {
-                                status: 'Active'
-                            }
                         }
-                    }
-                ],
-                unit: unitWhere
+                    },
+                    // If we specifically requested a unit, show its UNTAKEN bedrooms
+                    { unitId: unitId ? unitId : -1 }
+                ]
             },
             include: {
                 unit: {
@@ -425,7 +470,7 @@ exports.getVacantBedrooms = async (req, res) => {
             ]
         });
 
-        // Format bedrooms for dropdown: [Property Name]-[Bedroom Number] (e.g., 82-101-1)
+        // Format bedrooms for dropdown
         const formatted = bedrooms.map(b => ({
             id: b.id,
             bedroomNumber: b.bedroomNumber,

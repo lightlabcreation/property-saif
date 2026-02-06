@@ -1,0 +1,5 @@
+-- Add SMS tracking fields to message table
+ALTER TABLE `message` 
+ADD COLUMN IF NOT EXISTS `sentVia` VARCHAR(191) NOT NULL DEFAULT 'app',
+ADD COLUMN IF NOT EXISTS `smsSid` VARCHAR(191) NULL,
+ADD COLUMN IF NOT EXISTS `smsStatus` VARCHAR(191) NULL;

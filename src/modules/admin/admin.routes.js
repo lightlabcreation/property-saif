@@ -91,6 +91,8 @@ router.delete('/communication/emails/:id', communicationController.deleteEmailLo
 router.post('/communication/send-email', communicationController.sendComposeEmail);
 router.get('/communication', communicationController.getHistory);
 router.post('/communication', communicationController.sendMessage);
+router.delete('/communication/:id', communicationController.deleteLog);
+router.post('/communication/bulk-delete', communicationController.bulkDeleteLogs);
 
 router.get('/analytics/revenue', analyticsController.getRevenueStats);
 router.get('/analytics/vacancy', analyticsController.getVacancyStats);

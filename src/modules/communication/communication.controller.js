@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const smsService = require('../../services/sms.service');
 
 // Send a message
 exports.sendMessage = async (req, res) => {
@@ -7,26 +8,92 @@ exports.sendMessage = async (req, res) => {
         const { receiverId, content } = req.body;
         const senderId = req.user.id; // Assumes auth middleware populates req.user
 
-        if (!receiverId || !content) {
-            return res.status(400).json({ error: 'Receiver and content are required' });
+        // Handle Resident ID prefix from frontend
+        const targetId = typeof receiverId === 'string' && receiverId.startsWith('resident_')
+            ? parseInt(receiverId.replace('resident_', ''))
+            : parseInt(receiverId);
+
+        if (isNaN(targetId) || !content) {
+            return res.status(400).json({ error: 'Valid Receiver ID and content are required' });
         }
 
+        // Get receiver details to check for phone number and app access
+        const receiver = await prisma.user.findUnique({
+            where: { id: targetId },
+            select: { id: true, name: true, phone: true, email: true, type: true, password: true }
+        });
+
+        if (!receiver) {
+            return res.status(404).json({ error: 'Receiver not found' });
+        }
+
+        // Get sender details for SMS
+        const sender = await prisma.user.findUnique({
+            where: { id: parseInt(senderId) },
+            select: { name: true, role: true }
+        });
+
+        let smsSid = null;
+        let smsStatus = null;
+        const hasAppAccess = receiver.type !== 'RESIDENT' && receiver.password;
+        let sentVia = hasAppAccess ? 'app' : 'sms';
+
+        // Send SMS if receiver has a phone number
+        if (receiver.phone) {
+            const smsMessage = `${sender.name || 'Admin'}: ${content}`;
+            const smsResult = await smsService.sendSMS(receiver.phone, smsMessage);
+
+            if (smsResult.success) {
+                smsSid = smsResult.sid;
+                smsStatus = 'sent';
+                // If they have app access, it's both. If not (like Residents), it's SMS only.
+                sentVia = hasAppAccess ? 'both' : 'sms';
+                console.log(`✅ SMS sent to ${receiver.phone} (SID: ${smsSid})`);
+            } else {
+                console.error(`❌ SMS failed to ${receiver.phone}:`, smsResult.error);
+                smsStatus = 'failed';
+                sentVia = hasAppAccess ? 'app' : 'none';
+            }
+
+
+        }
+
+        // Create message in database
         const message = await prisma.message.create({
             data: {
                 content,
                 senderId: parseInt(senderId),
-                receiverId: parseInt(receiverId),
-                isRead: false
+                receiverId: targetId, // Use the numeric ID (works for both regular users and residents)
+                isRead: false,
+                smsSid,
+                smsStatus,
+                sentVia
             },
             include: {
                 sender: {
                     select: { id: true, name: true, role: true, email: true }
                 },
                 receiver: {
-                    select: { id: true, name: true, role: true, email: true }
+                    select: { id: true, name: true, role: true, email: true, phone: true }
                 }
             }
         });
+
+        // Log to CommunicationLog for auditing
+        try {
+            await prisma.communicationLog.create({
+                data: {
+                    channel: sentVia.includes('sms') ? 'SMS' : 'App',
+                    eventType: 'MANUAL_MESSAGE',
+                    recipient: receiver.email || receiver.phone || 'Unknown',
+                    recipientId: receiver.id,
+                    content: content,
+                    status: (sentVia === 'sms' && smsStatus === 'failed') ? 'Failed' : 'Sent'
+                }
+            });
+        } catch (logError) {
+            console.error('Error logging individual message:', logError);
+        }
 
         res.status(201).json(message);
     } catch (error) {
@@ -39,7 +106,14 @@ exports.sendMessage = async (req, res) => {
 exports.getHistory = async (req, res) => {
     try {
         const currentUserId = req.user.id;
-        const otherUserId = parseInt(req.params.userId);
+        const rawId = req.params.userId;
+        const otherUserId = typeof rawId === 'string' && rawId.startsWith('resident_')
+            ? parseInt(rawId.replace('resident_', ''))
+            : parseInt(rawId);
+
+        if (isNaN(otherUserId)) {
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
 
         const messages = await prisma.message.findMany({
             where: {
@@ -80,7 +154,8 @@ exports.getConversations = async (req, res) => {
             const users = await prisma.user.findMany({
                 where: {
                     id: { not: userId },
-                    role: { in: ['TENANT', 'OWNER'] }
+                    role: { in: ['TENANT', 'OWNER'] },
+                    type: { not: 'RESIDENT' }
                 },
                 select: {
                     id: true,
@@ -127,16 +202,15 @@ exports.getConversations = async (req, res) => {
             // Combine users and residents
             const allRecipients = [...users, ...formattedResidents];
 
-            // Attach metadata (unread count, last message) - only for Users, not Residents
+            // Attach metadata (unread count, last message)
             const recipientsWithMetadata = await Promise.all(allRecipients.map(async (recipient) => {
-                if (recipient.isResident) {
-                    // Residents don't have message history in the Message table
-                    return { ...recipient, unreadCount: 0, lastMessage: null };
-                }
+                const targetNumericId = typeof recipient.id === 'string' && recipient.id.startsWith('resident_')
+                    ? parseInt(recipient.id.replace('resident_', ''))
+                    : recipient.id;
 
                 const unreadCount = await prisma.message.count({
                     where: {
-                        senderId: recipient.id,
+                        senderId: targetNumericId,
                         receiverId: userId,
                         isRead: false
                     }
@@ -144,8 +218,8 @@ exports.getConversations = async (req, res) => {
                 const lastMessage = await prisma.message.findFirst({
                     where: {
                         OR: [
-                            { senderId: recipient.id, receiverId: userId },
-                            { senderId: userId, receiverId: recipient.id }
+                            { senderId: targetNumericId, receiverId: userId },
+                            { senderId: userId, receiverId: targetNumericId }
                         ]
                     },
                     orderBy: { createdAt: 'desc' }
